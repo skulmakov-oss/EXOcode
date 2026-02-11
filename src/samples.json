@@ -1,0 +1,8 @@
+[
+  {"input":"x = TRUE","target":"x = T"},
+  {"input":"y = FALSE","target":"y = F"},
+  {"input":"out = x AND y","target":"out = x & y"},
+  {"input":"z = NOT out","target":"z = ! out"},
+  {"input":"k = x OR y","target":"k = x | y"},
+  {"input":"m = x XOR y","target":"m = x ^ y"}
+]

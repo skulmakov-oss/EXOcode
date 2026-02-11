@@ -1,0 +1,48 @@
+[package]
+name = "exocode_core"
+version = "0.1.0"
+edition = "2021"
+authors = ["Said Kulmakov"]
+license = "MIT OR Apache-2.0"
+description = "EXOcode Core — Quadro Logic Engine"
+repository = ""
+keywords = ["logic", "simd", "reasoning", "agi"]
+categories = ["no-std", "science"]
+
+[lib]
+name = "exocode_core"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+# -----------------------------
+# Features
+# -----------------------------
+[features]
+default = ["std"]
+std = []
+simd = []
+bench = []
+
+# -----------------------------
+# Dependencies
+# -----------------------------
+[dependencies]
+
+# -----------------------------
+# Dev / Test
+# -----------------------------
+[dev-dependencies]
+
+# -----------------------------
+# Profiles
+# -----------------------------
+[profile.dev]
+opt-level = 1
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

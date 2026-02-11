@@ -1,0 +1,5 @@
+// Human layer (L1)
+x = TRUE
+y = FALSE
+out = x AND y
+z = NOT out

@@ -1,0 +1,10 @@
+fn main() {
+    let q: quad = T;
+    match q {
+        N => { return; }
+        F => { return; }
+        T => { return; }
+        S => { return; }
+        _ => { return; }
+    }
+}

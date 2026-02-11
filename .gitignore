@@ -1,0 +1,9 @@
+/target
+/target_parser
+**/target/
+**/*.rs.bk
+*.tmp
+*.temp
+*.exb
+!tests/golden/*.exb
+Cargo.lock
