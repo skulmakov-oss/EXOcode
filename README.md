@@ -3,6 +3,9 @@ Rust-like frontend + EXObyte emitter + VM runtime.
 
 This repository state is frozen as Toolchain v0 on branch `release/v0` and tag `v0.1.0`.
 
+## Changelog
+- See `CHANGELOG.md` for release notes (`v0.1.0`, `v1.0.0`).
+
 ## What's included
 - Parser, type-checker, IR lowering, EXObyte emitter.
 - EXObyte v0 VM executor and disassembler.
