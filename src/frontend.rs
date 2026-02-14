@@ -1,11 +1,13 @@
-use crate::exobyte_format::{write_i32_le, write_u16_le, write_u32_le, Opcode, MAGIC};
+use crate::exobyte_format::{
+    write_f64_le, write_i32_le, write_u16_le, write_u32_le, Opcode, MAGIC0, MAGIC1,
+};
 use std::collections::HashMap;
 
 pub const EXOCODE_EBNF: &str = r#"
 Program      = { Function } ;
 Function     = "fn" Ident "(" [ Param { "," Param } ] ")" [ "->" Type ] Block ;
 Param        = Ident ":" Type ;
-Type         = "quad" | "bool" | "i32" | "u32" | "fx" ;
+Type         = "quad" | "bool" | "i32" | "u32" | "fx" | "f64" ;
 Block        = "{" { Stmt } "}" ;
 Stmt         = LetStmt | IfStmt | MatchStmt | ReturnStmt | ExprStmt ;
 LetStmt      = "let" Ident [ ":" Type ] "=" Expr ";" ;
@@ -18,9 +20,11 @@ Expr         = Impl ;
 Impl         = Or { "->" Or } ;                // '->' is quad-only
 Or           = And { "||" And } ;              // quad or bool
 And          = Eq { "&&" Eq } ;                // quad or bool
-Eq           = Unary { ("==" | "!=") Unary } ; // returns bool
-Unary        = [ "!" ] Primary ;
-Primary      = QuadLit | BoolLit | Num | Ident | Call | "(" Expr ")" ;
+Eq           = Add { ("==" | "!=") Add } ; // returns bool
+Add          = Mul { ("+" | "-") Mul } ;
+Mul          = Unary { ("*" | "/") Unary } ;
+Unary        = [ "!" | "+" | "-" ] Primary ;
+Primary      = QuadLit | BoolLit | Num | Float | Ident | Call | "(" Expr ")" ;
 Call         = Ident "(" [ Expr { "," Expr } ] ")" ;
 QuadLit      = "N" | "F" | "T" | "S" ;
 BoolLit      = "true" | "false" ;
@@ -33,6 +37,7 @@ pub enum Type {
     I32,
     U32,
     Fx,
+    F64,
     Unit,
 }
 
@@ -47,6 +52,8 @@ pub enum QuadVal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
     Not,
+    Pos,
+    Neg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,20 +63,25 @@ pub enum BinaryOp {
     Implies,
     Eq,
     Ne,
+    Add,
+    Sub,
+    Mul,
+    Div,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     QuadLiteral(QuadVal),
     BoolLiteral(bool),
     Num(i64),
+    Float(f64),
     Var(String),
     Call(String, Vec<Expr>),
     Unary(UnaryOp, Box<Expr>),
     Binary(Box<Expr>, BinaryOp, Box<Expr>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     Let {
         name: String,
@@ -90,13 +102,13 @@ pub enum Stmt {
     Expr(Expr),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MatchArm {
     pub pat: QuadVal,
     pub block: Vec<Stmt>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Function {
     pub name: String,
     pub params: Vec<(String, Type)>,
@@ -104,7 +116,7 @@ pub struct Function {
     pub body: Vec<Stmt>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     pub functions: Vec<Function>,
 }
@@ -132,6 +144,7 @@ pub enum TokenKind {
     TyI32,
     TyU32,
     TyFx,
+    TyF64,
     QuadN,
     QuadF,
     QuadT,
@@ -140,6 +153,10 @@ pub enum TokenKind {
     Num,
     AndAnd,
     OrOr,
+    Plus,
+    Minus,
+    Star,
+    Slash,
     Bang,
     Arrow,
     FatArrow,
@@ -231,6 +248,48 @@ impl Default for ScopeEnv {
 
 pub fn build_fn_table(functions: &[Function]) -> Result<FnTable, FrontendError> {
     let mut out = HashMap::new();
+    out.insert(
+        "sin".to_string(),
+        FnSig {
+            params: vec![Type::F64],
+            ret: Type::F64,
+        },
+    );
+    out.insert(
+        "cos".to_string(),
+        FnSig {
+            params: vec![Type::F64],
+            ret: Type::F64,
+        },
+    );
+    out.insert(
+        "tan".to_string(),
+        FnSig {
+            params: vec![Type::F64],
+            ret: Type::F64,
+        },
+    );
+    out.insert(
+        "sqrt".to_string(),
+        FnSig {
+            params: vec![Type::F64],
+            ret: Type::F64,
+        },
+    );
+    out.insert(
+        "abs".to_string(),
+        FnSig {
+            params: vec![Type::F64],
+            ret: Type::F64,
+        },
+    );
+    out.insert(
+        "pow".to_string(),
+        FnSig {
+            params: vec![Type::F64, Type::F64],
+            ret: Type::F64,
+        },
+    );
     for f in functions {
         if out.contains_key(&f.name) {
             return Err(FrontendError {
@@ -352,21 +411,37 @@ pub fn lex(input: &str) -> Result<Vec<Token>, FrontendError> {
                     });
                 }
             }
+            b'+' => {
+                push(TokenKind::Plus, "+", i, &mut out);
+                i += 1;
+            }
+            b'*' => {
+                push(TokenKind::Star, "*", i, &mut out);
+                i += 1;
+            }
+            b'/' => {
+                push(TokenKind::Slash, "/", i, &mut out);
+                i += 1;
+            }
             b'-' => {
                 if i + 1 < bytes.len() && bytes[i + 1] == b'>' {
                     push(TokenKind::Arrow, "->", i, &mut out);
                     i += 2;
                 } else {
-                    return Err(FrontendError {
-                        pos: i,
-                        message: "expected '->'".to_string(),
-                    });
+                    push(TokenKind::Minus, "-", i, &mut out);
+                    i += 1;
                 }
             }
             d if d.is_ascii_digit() => {
                 i += 1;
                 while i < bytes.len() && bytes[i].is_ascii_digit() {
                     i += 1;
+                }
+                if i < bytes.len() && bytes[i] == b'.' {
+                    i += 1;
+                    while i < bytes.len() && bytes[i].is_ascii_digit() {
+                        i += 1;
+                    }
                 }
                 push(TokenKind::Num, &input[start..i], start, &mut out);
             }
@@ -390,6 +465,7 @@ pub fn lex(input: &str) -> Result<Vec<Token>, FrontendError> {
                     "i32" => TokenKind::TyI32,
                     "u32" => TokenKind::TyU32,
                     "fx" => TokenKind::TyFx,
+                    "f64" => TokenKind::TyF64,
                     "N" => TokenKind::QuadN,
                     "F" => TokenKind::QuadF,
                     "T" => TokenKind::QuadT,
@@ -584,6 +660,7 @@ fn infer_expr_type(expr: &Expr, env: &ScopeEnv, table: &FnTable) -> Result<Type,
         Expr::QuadLiteral(_) => Ok(Type::Quad),
         Expr::BoolLiteral(_) => Ok(Type::Bool),
         Expr::Num(_) => Ok(Type::I32),
+        Expr::Float(_) => Ok(Type::F64),
         Expr::Var(v) => env.get(v).ok_or(FrontendError {
             pos: 0,
             message: format!("unknown variable '{}'", v),
@@ -618,14 +695,26 @@ fn infer_expr_type(expr: &Expr, env: &ScopeEnv, table: &FnTable) -> Result<Type,
             }
             Ok(sig.ret)
         }
-        Expr::Unary(UnaryOp::Not, inner) => {
+        Expr::Unary(op, inner) => {
             let t = infer_expr_type(inner, env, table)?;
-            match t {
-                Type::Quad | Type::Bool => Ok(t),
-                _ => Err(FrontendError {
-                    pos: 0,
-                    message: format!("operator ! unsupported for {:?}", t),
-                }),
+            match op {
+                UnaryOp::Not => match t {
+                    Type::Quad | Type::Bool => Ok(t),
+                    _ => Err(FrontendError {
+                        pos: 0,
+                        message: format!("operator ! unsupported for {:?}", t),
+                    }),
+                },
+                UnaryOp::Pos | UnaryOp::Neg => {
+                    if t == Type::F64 {
+                        Ok(Type::F64)
+                    } else {
+                        Err(FrontendError {
+                            pos: 0,
+                            message: format!("operator +/- unsupported for {:?}", t),
+                        })
+                    }
+                }
             }
         }
         Expr::Binary(l, op, r) => {
@@ -664,6 +753,19 @@ fn infer_expr_type(expr: &Expr, env: &ScopeEnv, table: &FnTable) -> Result<Type,
                         Err(FrontendError {
                             pos: 0,
                             message: "operator '->' is allowed only for quad".to_string(),
+                        })
+                    }
+                }
+                BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
+                    if lt == Type::F64 && rt == Type::F64 {
+                        Ok(Type::F64)
+                    } else {
+                        Err(FrontendError {
+                            pos: 0,
+                            message: format!(
+                                "f64 arithmetic requires f64 operands, got {:?} and {:?}",
+                                lt, rt
+                            ),
                         })
                     }
                 }
@@ -862,16 +964,52 @@ impl Parser {
     }
 
     fn parse_eq(&mut self) -> Result<Expr, FrontendError> {
-        let mut left = self.parse_unary()?;
+        let mut left = self.parse_add()?;
         loop {
             if self.eat(TokenKind::EqEq) {
-                let right = self.parse_unary()?;
+                let right = self.parse_add()?;
                 left = Expr::Binary(Box::new(left), BinaryOp::Eq, Box::new(right));
                 continue;
             }
             if self.eat(TokenKind::Ne) {
-                let right = self.parse_unary()?;
+                let right = self.parse_add()?;
                 left = Expr::Binary(Box::new(left), BinaryOp::Ne, Box::new(right));
+                continue;
+            }
+            break;
+        }
+        Ok(left)
+    }
+
+    fn parse_add(&mut self) -> Result<Expr, FrontendError> {
+        let mut left = self.parse_mul()?;
+        loop {
+            if self.eat(TokenKind::Plus) {
+                let right = self.parse_mul()?;
+                left = Expr::Binary(Box::new(left), BinaryOp::Add, Box::new(right));
+                continue;
+            }
+            if self.eat(TokenKind::Minus) {
+                let right = self.parse_mul()?;
+                left = Expr::Binary(Box::new(left), BinaryOp::Sub, Box::new(right));
+                continue;
+            }
+            break;
+        }
+        Ok(left)
+    }
+
+    fn parse_mul(&mut self) -> Result<Expr, FrontendError> {
+        let mut left = self.parse_unary()?;
+        loop {
+            if self.eat(TokenKind::Star) {
+                let right = self.parse_unary()?;
+                left = Expr::Binary(Box::new(left), BinaryOp::Mul, Box::new(right));
+                continue;
+            }
+            if self.eat(TokenKind::Slash) {
+                let right = self.parse_unary()?;
+                left = Expr::Binary(Box::new(left), BinaryOp::Div, Box::new(right));
                 continue;
             }
             break;
@@ -883,6 +1021,14 @@ impl Parser {
         if self.eat(TokenKind::Bang) {
             let inner = self.parse_unary()?;
             return Ok(Expr::Unary(UnaryOp::Not, Box::new(inner)));
+        }
+        if self.eat(TokenKind::Plus) {
+            let inner = self.parse_unary()?;
+            return Ok(Expr::Unary(UnaryOp::Pos, Box::new(inner)));
+        }
+        if self.eat(TokenKind::Minus) {
+            let inner = self.parse_unary()?;
+            return Ok(Expr::Unary(UnaryOp::Neg, Box::new(inner)));
         }
         self.parse_primary()
     }
@@ -913,6 +1059,13 @@ impl Parser {
         }
         if self.check(TokenKind::Num) {
             let text = self.advance().text;
+            if text.contains('.') {
+                let n = text.parse::<f64>().map_err(|_| FrontendError {
+                    pos: 0,
+                    message: "invalid float number".to_string(),
+                })?;
+                return Ok(Expr::Float(n));
+            }
             let n = text.parse::<i64>().map_err(|_| FrontendError {
                 pos: 0,
                 message: "invalid number".to_string(),
@@ -958,6 +1111,9 @@ impl Parser {
         }
         if self.eat(TokenKind::TyFx) {
             return Ok(Type::Fx);
+        }
+        if self.eat(TokenKind::TyF64) {
+            return Ok(Type::F64);
         }
         Err(FrontendError {
             pos: self.pos(),
@@ -1014,7 +1170,7 @@ impl Parser {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum IrInstr {
     Label {
         name: String,
@@ -1030,6 +1186,10 @@ pub enum IrInstr {
     LoadI32 {
         dst: u16,
         val: i32,
+    },
+    LoadF64 {
+        dst: u16,
+        val: f64,
     },
     LoadVar {
         dst: u16,
@@ -1082,6 +1242,26 @@ pub enum IrInstr {
         lhs: u16,
         rhs: u16,
     },
+    AddF64 {
+        dst: u16,
+        lhs: u16,
+        rhs: u16,
+    },
+    SubF64 {
+        dst: u16,
+        lhs: u16,
+        rhs: u16,
+    },
+    MulF64 {
+        dst: u16,
+        lhs: u16,
+        rhs: u16,
+    },
+    DivF64 {
+        dst: u16,
+        lhs: u16,
+        rhs: u16,
+    },
     Jmp {
         label: String,
     },
@@ -1099,7 +1279,7 @@ pub enum IrInstr {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IrFunction {
     pub name: String,
     pub instrs: Vec<IrInstr>,
@@ -1214,7 +1394,11 @@ pub fn compile_program_to_exobyte(input: &str) -> Result<Vec<u8>, FrontendError>
 
 fn emit_exobyte(funcs: &[IrFunction]) -> Result<Vec<u8>, FrontendError> {
     let mut out = Vec::new();
-    out.extend_from_slice(&MAGIC);
+    if has_v1_math_instr(funcs) {
+        out.extend_from_slice(&MAGIC1);
+    } else {
+        out.extend_from_slice(&MAGIC0);
+    }
     for f in funcs {
         let name_bytes = f.name.as_bytes();
         write_u16_le(
@@ -1290,6 +1474,7 @@ fn encoded_size(instr: &IrInstr) -> Option<usize> {
         IrInstr::LoadQ { .. } => 1 + 2 + 1,
         IrInstr::LoadBool { .. } => 1 + 2 + 1,
         IrInstr::LoadI32 { .. } => 1 + 2 + 4,
+        IrInstr::LoadF64 { .. } => 1 + 2 + 8,
         IrInstr::LoadVar { .. } => 1 + 2 + 2,
         IrInstr::StoreVar { .. } => 1 + 2 + 2,
         IrInstr::QAnd { .. }
@@ -1298,7 +1483,11 @@ fn encoded_size(instr: &IrInstr) -> Option<usize> {
         | IrInstr::BoolAnd { .. }
         | IrInstr::BoolOr { .. }
         | IrInstr::CmpEq { .. }
-        | IrInstr::CmpNe { .. } => 1 + 2 + 2 + 2,
+        | IrInstr::CmpNe { .. }
+        | IrInstr::AddF64 { .. }
+        | IrInstr::SubF64 { .. }
+        | IrInstr::MulF64 { .. }
+        | IrInstr::DivF64 { .. } => 1 + 2 + 2 + 2,
         IrInstr::QNot { .. } | IrInstr::BoolNot { .. } => 1 + 2 + 2,
         IrInstr::Jmp { .. } => 1 + 4,
         IrInstr::JmpIf { .. } => 1 + 2 + 4,
@@ -1337,6 +1526,11 @@ fn emit_instr(
             write_u16_le(out, *dst);
             write_i32_le(out, *val);
         }
+        IrInstr::LoadF64 { dst, val } => {
+            out.push(Opcode::LoadF64.byte());
+            write_u16_le(out, *dst);
+            write_f64_le(out, *val);
+        }
         IrInstr::LoadVar { dst, name } => {
             out.push(Opcode::LoadVar.byte());
             write_u16_le(out, *dst);
@@ -1356,6 +1550,10 @@ fn emit_instr(
         IrInstr::BoolNot { dst, src } => emit_2reg(Opcode::BoolNot, *dst, *src, out),
         IrInstr::CmpEq { dst, lhs, rhs } => emit_3reg(Opcode::CmpEq, *dst, *lhs, *rhs, out),
         IrInstr::CmpNe { dst, lhs, rhs } => emit_3reg(Opcode::CmpNe, *dst, *lhs, *rhs, out),
+        IrInstr::AddF64 { dst, lhs, rhs } => emit_3reg(Opcode::AddF64, *dst, *lhs, *rhs, out),
+        IrInstr::SubF64 { dst, lhs, rhs } => emit_3reg(Opcode::SubF64, *dst, *lhs, *rhs, out),
+        IrInstr::MulF64 { dst, lhs, rhs } => emit_3reg(Opcode::MulF64, *dst, *lhs, *rhs, out),
+        IrInstr::DivF64 { dst, lhs, rhs } => emit_3reg(Opcode::DivF64, *dst, *lhs, *rhs, out),
         IrInstr::Jmp { label } => {
             out.push(Opcode::Jmp.byte());
             let addr = *label_pc.get(label).ok_or(FrontendError {
@@ -1424,6 +1622,21 @@ fn emit_2reg(op: Opcode, dst: u16, src: u16, out: &mut Vec<u8>) {
     out.push(op.byte());
     write_u16_le(out, dst);
     write_u16_le(out, src);
+}
+
+fn has_v1_math_instr(funcs: &[IrFunction]) -> bool {
+    funcs.iter().any(|f| {
+        f.instrs.iter().any(|i| {
+            matches!(
+                i,
+                IrInstr::LoadF64 { .. }
+                    | IrInstr::AddF64 { .. }
+                    | IrInstr::SubF64 { .. }
+                    | IrInstr::MulF64 { .. }
+                    | IrInstr::DivF64 { .. }
+            )
+        })
+    })
 }
 
 #[derive(Debug, Default)]
@@ -1507,6 +1720,11 @@ fn lower_expr(
             out.push(IrInstr::LoadI32 { dst: r, val });
             Ok((r, Type::I32))
         }
+        Expr::Float(n) => {
+            let r = alloc(next);
+            out.push(IrInstr::LoadF64 { dst: r, val: *n });
+            Ok((r, Type::F64))
+        }
         Expr::Var(name) => {
             let ty = env.get(name).ok_or(FrontendError {
                 pos: 0,
@@ -1566,20 +1784,54 @@ fn lower_expr(
             });
             Ok((r, sig.ret))
         }
-        Expr::Unary(UnaryOp::Not, inner) => {
+        Expr::Unary(op, inner) => {
             let (src, ty) = lower_expr(inner, next, out, env, fn_table)?;
-            let dst = alloc(next);
-            match ty {
-                Type::Quad => out.push(IrInstr::QNot { dst, src }),
-                Type::Bool => out.push(IrInstr::BoolNot { dst, src }),
-                _ => {
-                    return Err(FrontendError {
-                        pos: 0,
-                        message: format!("operator ! unsupported for {:?}", ty),
-                    })
+            match op {
+                UnaryOp::Not => {
+                    let dst = alloc(next);
+                    match ty {
+                        Type::Quad => out.push(IrInstr::QNot { dst, src }),
+                        Type::Bool => out.push(IrInstr::BoolNot { dst, src }),
+                        _ => {
+                            return Err(FrontendError {
+                                pos: 0,
+                                message: format!("operator ! unsupported for {:?}", ty),
+                            })
+                        }
+                    }
+                    Ok((dst, ty))
+                }
+                UnaryOp::Pos => {
+                    if ty == Type::F64 {
+                        Ok((src, Type::F64))
+                    } else {
+                        Err(FrontendError {
+                            pos: 0,
+                            message: format!("operator + unsupported for {:?}", ty),
+                        })
+                    }
+                }
+                UnaryOp::Neg => {
+                    if ty != Type::F64 {
+                        return Err(FrontendError {
+                            pos: 0,
+                            message: format!("operator - unsupported for {:?}", ty),
+                        });
+                    }
+                    let zero = alloc(next);
+                    out.push(IrInstr::LoadF64 {
+                        dst: zero,
+                        val: 0.0,
+                    });
+                    let dst = alloc(next);
+                    out.push(IrInstr::SubF64 {
+                        dst,
+                        lhs: zero,
+                        rhs: src,
+                    });
+                    Ok((dst, Type::F64))
                 }
             }
-            Ok((dst, ty))
         }
         Expr::Binary(left, op, right) => {
             let (lr, lt) = lower_expr(left, next, out, env, fn_table)?;
@@ -1657,6 +1909,62 @@ fn lower_expr(
                         rhs: rr,
                     });
                     return Ok((dst, Type::Bool));
+                }
+                BinaryOp::Add => {
+                    if lt != Type::F64 {
+                        return Err(FrontendError {
+                            pos: 0,
+                            message: format!("operator + unsupported for {:?}", lt),
+                        });
+                    }
+                    out.push(IrInstr::AddF64 {
+                        dst,
+                        lhs: lr,
+                        rhs: rr,
+                    });
+                    return Ok((dst, Type::F64));
+                }
+                BinaryOp::Sub => {
+                    if lt != Type::F64 {
+                        return Err(FrontendError {
+                            pos: 0,
+                            message: format!("operator - unsupported for {:?}", lt),
+                        });
+                    }
+                    out.push(IrInstr::SubF64 {
+                        dst,
+                        lhs: lr,
+                        rhs: rr,
+                    });
+                    return Ok((dst, Type::F64));
+                }
+                BinaryOp::Mul => {
+                    if lt != Type::F64 {
+                        return Err(FrontendError {
+                            pos: 0,
+                            message: format!("operator * unsupported for {:?}", lt),
+                        });
+                    }
+                    out.push(IrInstr::MulF64 {
+                        dst,
+                        lhs: lr,
+                        rhs: rr,
+                    });
+                    return Ok((dst, Type::F64));
+                }
+                BinaryOp::Div => {
+                    if lt != Type::F64 {
+                        return Err(FrontendError {
+                            pos: 0,
+                            message: format!("operator / unsupported for {:?}", lt),
+                        });
+                    }
+                    out.push(IrInstr::DivF64 {
+                        dst,
+                        lhs: lr,
+                        rhs: rr,
+                    });
+                    return Ok((dst, Type::F64));
                 }
             }
             Ok((dst, lt))
@@ -1941,12 +2249,15 @@ mod tests {
 
     #[test]
     fn lexer_recognizes_core_tokens() {
-        let tokens = lex("fn x(a: quad) -> quad { let c = !a && T; }").expect("lex");
+        let tokens = lex("fn x(a: quad, b: f64) -> quad { let c = !a && T; let d = b + 1.0; }")
+            .expect("lex");
         assert!(tokens.iter().any(|t| t.kind == TokenKind::KwFn));
         assert!(tokens.iter().any(|t| t.kind == TokenKind::AndAnd));
         assert!(tokens.iter().any(|t| t.kind == TokenKind::Bang));
         assert!(tokens.iter().any(|t| t.kind == TokenKind::Arrow));
         assert!(tokens.iter().any(|t| t.kind == TokenKind::QuadT));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::TyF64));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Plus));
     }
 
     #[test]
@@ -2006,6 +2317,53 @@ mod tests {
         assert!(ir
             .iter()
             .any(|i| matches!(i, IrInstr::LoadI32 { val: 42, .. })));
+    }
+
+    #[test]
+    fn parse_float_math_precedence() {
+        let src = r#"
+			fn main() {
+				let x: f64 = 1.0 + 2.0 * 3.0;
+				return;
+			}
+		"#;
+        let p = parse_program(src).expect("parse");
+        let stmt = &p.functions[0].body[0];
+        let Stmt::Let { value, .. } = stmt else {
+            panic!("expected let");
+        };
+        assert_eq!(
+            value,
+            &Expr::Binary(
+                Box::new(Expr::Float(1.0)),
+                BinaryOp::Add,
+                Box::new(Expr::Binary(
+                    Box::new(Expr::Float(2.0)),
+                    BinaryOp::Mul,
+                    Box::new(Expr::Float(3.0))
+                ))
+            )
+        );
+    }
+
+    #[test]
+    fn typecheck_builtin_sin_requires_f64() {
+        let bad = r#"
+			fn main() {
+				let x: f64 = sin(1);
+				return;
+			}
+		"#;
+        let err = type_check_program(&parse_program(bad).expect("parse")).expect_err("must fail");
+        assert!(err.message.contains("arg 0 for 'sin'"));
+
+        let ok = r#"
+			fn main() {
+				let x: f64 = sin(1.0);
+				return;
+			}
+		"#;
+        type_check_program(&parse_program(ok).expect("parse")).expect("must pass");
     }
 
     #[test]
@@ -2205,7 +2563,19 @@ mod tests {
 		"#;
         let bytes = compile_program_to_exobyte(src).expect("compile");
         assert!(bytes.len() >= 8);
-        assert_eq!(&bytes[0..8], &MAGIC);
+        assert_eq!(&bytes[0..8], &MAGIC0);
+    }
+
+    #[test]
+    fn emit_exobyte_v1_for_f64_math() {
+        let src = r#"
+			fn main() {
+				let x: f64 = 1.5 + 2.25;
+				return;
+			}
+		"#;
+        let bytes = compile_program_to_exobyte(src).expect("compile");
+        assert_eq!(&bytes[0..8], &MAGIC1);
     }
 
     #[test]

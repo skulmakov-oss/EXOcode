@@ -1,8 +1,12 @@
 use exocode_core::frontend::compile_program_to_exobyte;
 
 fn check_golden(base: &str) {
-    let src_path = format!("tests/golden/{}.exo", base);
-    let bin_path = format!("tests/golden/{}.exb", base);
+    check_golden_in("tests/golden", base);
+}
+
+fn check_golden_in(dir: &str, base: &str) {
+    let src_path = format!("{}/{}.exo", dir, base);
+    let bin_path = format!("{}/{}.exb", dir, base);
     let src = std::fs::read_to_string(&src_path).expect("read .exo");
     let expected = std::fs::read(&bin_path).expect("read .exb");
     let got = compile_program_to_exobyte(&src).expect("compile");
@@ -63,4 +67,9 @@ fn golden_call_ret() {
 #[test]
 fn golden_match_quad() {
     check_golden("match_quad");
+}
+
+#[test]
+fn golden_v1_calculator() {
+    check_golden_in("tests/golden_v1", "calculator");
 }

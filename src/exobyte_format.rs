@@ -1,4 +1,5 @@
-pub const MAGIC: [u8; 8] = *b"EXOBYTE0";
+pub const MAGIC0: [u8; 8] = *b"EXOBYTE0";
+pub const MAGIC1: [u8; 8] = *b"EXOBYTE1";
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -21,6 +22,11 @@ pub enum Opcode {
     JmpIf = 0x31,
     Call = 0x40,
     Ret = 0x41,
+    LoadF64 = 0x50,
+    AddF64 = 0x51,
+    SubF64 = 0x52,
+    MulF64 = 0x53,
+    DivF64 = 0x54,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +73,11 @@ impl Opcode {
             x if x == Self::JmpIf as u8 => Ok(Self::JmpIf),
             x if x == Self::Call as u8 => Ok(Self::Call),
             x if x == Self::Ret as u8 => Ok(Self::Ret),
+            x if x == Self::LoadF64 as u8 => Ok(Self::LoadF64),
+            x if x == Self::AddF64 as u8 => Ok(Self::AddF64),
+            x if x == Self::SubF64 as u8 => Ok(Self::SubF64),
+            x if x == Self::MulF64 as u8 => Ok(Self::MulF64),
+            x if x == Self::DivF64 as u8 => Ok(Self::DivF64),
             _ => Err(ExobyteFormatError::UnknownOpcode(v)),
         }
     }
@@ -81,6 +92,10 @@ pub fn write_u32_le(out: &mut Vec<u8>, v: u32) {
 }
 
 pub fn write_i32_le(out: &mut Vec<u8>, v: i32) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+pub fn write_f64_le(out: &mut Vec<u8>, v: f64) {
     out.extend_from_slice(&v.to_le_bytes());
 }
 
@@ -113,6 +128,16 @@ pub fn read_u32_le(bytes: &[u8], i: &mut usize) -> Result<u32, ExobyteFormatErro
 
 pub fn read_i32_le(bytes: &[u8], i: &mut usize) -> Result<i32, ExobyteFormatError> {
     Ok(read_u32_le(bytes, i)? as i32)
+}
+
+pub fn read_f64_le(bytes: &[u8], i: &mut usize) -> Result<f64, ExobyteFormatError> {
+    if *i + 8 > bytes.len() {
+        return Err(ExobyteFormatError::UnexpectedEof);
+    }
+    let mut raw = [0u8; 8];
+    raw.copy_from_slice(&bytes[*i..*i + 8]);
+    *i += 8;
+    Ok(f64::from_le_bytes(raw))
 }
 
 pub fn read_utf8(bytes: &[u8], i: &mut usize, len: usize) -> Result<String, ExobyteFormatError> {

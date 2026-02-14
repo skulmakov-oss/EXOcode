@@ -1,6 +1,8 @@
 # EXOcode Toolchain v0
 Rust-like frontend + EXObyte emitter + VM runtime.
 
+This repository state is frozen as Toolchain v0 on branch `release/v0` and tag `v0.1.0`.
+
 ## What's included
 - Parser, type-checker, IR lowering, EXObyte emitter.
 - EXObyte v0 VM executor and disassembler.
@@ -108,3 +110,15 @@ cargo test --test golden_exobyte
 - Stabilize stdlib ABI and calling convention.
 - Debug info mapping (source positions -> bytecode offsets).
 - EXObyte versioning policy and compatibility matrix.
+
+## v1-math (in progress)
+- Add first-class `f64` type and float literals in frontend/type checker/IR.
+- Add arithmetic opcodes for `f64`: `LOAD_F64`, `ADD_F64`, `SUB_F64`, `MUL_F64`, `DIV_F64`.
+- Add math builtins in VM dispatch: `sin`, `cos`, `tan`, `sqrt`, `abs`, `pow`.
+- Preserve backward compatibility: VM executes both `EXOBYTE0` and `EXOBYTE1`.
+- Keep all v0 tests/golden fixtures green while extending v1.
+
+## EXObyte Versioning Policy
+- `EXOBYTE0`: frozen v0 format and opcode set.
+- `EXOBYTE1`: v1 extension format (new MAGIC) for math opcodes.
+- VM reader supports both `EXOBYTE0` and `EXOBYTE1`, so old `.exb` files remain runnable.

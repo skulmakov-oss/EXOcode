@@ -1,0 +1,7 @@
+fn main() {
+    let a: f64 = 1.5 + 2.25 * 2.0;
+    let b: f64 = sqrt(9.0);
+    let c: f64 = sin(0.0) + cos(0.0) + abs(-1.0) + pow(2.0, 3.0);
+    let d: f64 = (a + b + c) / 2.0;
+    if d == 9.5 { return; } else { return; }
+}
