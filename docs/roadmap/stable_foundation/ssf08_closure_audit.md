@@ -99,6 +99,52 @@ that basis. AC1/AC2/AC5's own §3 rows below are updated accordingly, with
 the original "PARTIALLY SATISFIED, #1718" text struck through rather than
 deleted.
 
+**2026-09-06 addendum #4 — Lane 5 (#1759-#1763, AC4) closure audit and
+execution-order reconciliation.** A dedicated audit (baseline
+`01aa1a079a7cd9cac82e8ad33dd557289761f5bd`) independently re-checked, not
+mechanically inherited, all five findings against current `main`. All five
+remain genuinely live - none were superseded by later work (fresh `git log`
+since the original audit SHA touching `crates/sm-runtime-core/src/lib.rs`
+and `crates/sm-vm/src/semcode_vm.rs` found substantial unrelated activity
+but zero commits touching `Steps`/`Calls`/`ConstPool`/`TraceEntries`/
+`trace_enabled`/`ExecutionContext` validation/`RuntimeTrap` construction).
+Full evidence, per-issue falsification, dependency analysis, a full
+`RuntimeQuotas`/`QuotaKind` inventory (found no sixth inert quota kind
+beyond the four already filed), and an AC4 decomposition into five testable
+subcriteria (AC4.a-e): `docs/roadmap/stable_foundation/ssf08_lane5_resource_failure_closure_audit.md`.
+
+Per-issue disposition summary: `#1759` (`Steps`/`Calls` bounded execution,
+P1) - REQUIRED, IMPLEMENT, no architectural ambiguity, the sole safety-critical
+finding, but blocked on freezing three contract questions (step/call
+counting semantics, exhaustion timing) before any code. `#1760`
+(`trace_enabled`/`TraceEntries`) and `#1761` (`ConstPool`) - NEW DECISION
+REQUIRED BEFORE REPAIR; evidence for `#1761` specifically leans toward
+contract narrowing/removal rather than implementation, since no
+architectural referent for a "constant pool" resource exists in the current
+design at all. `#1762` (`ExecutionContext`/quota provenance) - NEW DECISION
+REQUIRED BEFORE REPAIR, genuinely dependent on `#1759`'s outcome for its
+strongest repair option (recording the actual quota envelope is only
+meaningful once `Steps`/`Calls` participate in it). `#1763` (`RuntimeTrap`/
+`RuntimeError` split) - REQUIRED, CONTRACT NARROWING, but splittable: its
+non-quota-related half (nine of thirteen `RuntimeTrap` variants never
+constructed; `docs/spec/vm.md`'s own failure-family list independently
+found to omit three *live* variants) can proceed in parallel with the other
+four tracks, while only the `RuntimeTrap::QuotaExceeded` variant's fate must
+wait for `#1760`/`#1761` to settle which `QuotaKind` members remain active.
+An independent, already-frozen, differently-owned authority
+(`docs/roadmap/language_maturity/core_trust_freeze/trap_taxonomy.md`,
+CTF-2/PCC) was cross-checked and found to already, implicitly, treat
+top-level `RuntimeError` variants as legitimate evidence for several frozen
+trap classes - this weighs against consolidating everything into
+`RuntimeTrap` and toward narrowing it to its four genuinely-live variants
+instead.
+
+**This is an audit only. No production Rust changed. AC4 is explicitly
+NOT marked satisfied** - §3's AC4 row below is intentionally left
+unchanged by this addendum. `#1579` remains OPEN, now blocked solely on
+Lane 5. Exact next checkpoint (not started): `#1759`'s own contract-decision
+pass, per the linked document's §13.
+
 ## 1. Position A — frozen claim (authoritative)
 
 Recorded in `docs/roadmap/stable_foundation/ssf08_ownership_position_decision.md`,

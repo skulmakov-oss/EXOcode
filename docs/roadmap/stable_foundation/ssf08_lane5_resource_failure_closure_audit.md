@@ -1,0 +1,619 @@
+# SSF-08 Lane 5 — Resource / Quota / Failure-Taxonomy Closure Audit & Execution-Order Reconciliation
+
+Status: **audit only, no repair authorized by this document**
+Audit SHA: `01aa1a079a7cd9cac82e8ad33dd557289761f5bd` (exact `main`, confirmed via
+`git fetch origin && git checkout main && git pull --ff-only && git rev-parse HEAD`
+immediately before this audit; `origin/main` had not moved past this SHA)
+Umbrella: SSF-08 umbrella #1579 remains OPEN
+Purpose: determine, with fresh current-`main` evidence (not the 2026-08
+Phase-A audit's own text taken as fact), what in Lane 5 (#1759-#1763, AC4)
+is still genuinely live, what depends on what, and in what order the
+remaining work should execute. No production Rust changed while producing
+this document.
+
+**Process note (safety invariant for this whole checkpoint and every future
+one touching this file):** a prior docs-only commit's message contained the
+sentence "still READY TO CLOSE #1579: NO" and GitHub's issue-linking
+keyword scanner matched "close #1579" as a literal substring on merge,
+auto-closing #1579 despite the negation. #1579 was reopened immediately.
+This document and every commit/PR produced for this checkpoint deliberately
+avoid the words close/closes/closed/fix/fixes/fixed/resolve/resolves/
+resolved immediately followed by `#1579` anywhere in commit messages, PR
+titles, or PR bodies.
+
+## 1. Baseline and scope
+
+`#1579`'s current AC status, independently re-confirmed at this SHA (see
+`ssf08_closure_audit.md` addendum #3, itself independently re-checked, not
+just cited): AC1/AC2/AC3/AC5/AC6/AC7 SATISFIED, AC4 NOT SATISFIED. The
+residual candidate set is exactly `#1759`-`#1763`, all `OPEN`, filed under
+umbrella `#1617` (a much older, broader, 18-module "platform-wide readiness
+self-deception" audit, Phase A only, no repair performed at filing time),
+module 08 (`sm-runtime-core`), at a much older audit SHA
+(`4ac4d1a169902777e760e23eaee92aa233edc04d`). Every finding below is
+re-derived from current `main`, not inherited from that audit's own text.
+
+## 2. Fresh-check summary (all five issues)
+
+| Issue | Title (short) | GitHub state | Comments | Linked PR | Later commits touching claimed authority |
+|---|---|---|---|---|---|
+| #1759 | `max_steps`/`max_calls` published, never enforced | OPEN | 0 | none | none found (see §5) |
+| #1760 | `trace_enabled`/`max_trace_entries` inert | OPEN | 0 | none | none found (see §6) |
+| #1761 | `ConstPool` quota inert | OPEN | 0 | none | none found (see §7) |
+| #1762 | `ExecutionContext`/quota identity can diverge | OPEN | 0 | none | none found (see §8) |
+| #1763 | `RuntimeTrap` mostly unconstructed, parallel `RuntimeError` used | OPEN | 0 | none | none found (see §9) |
+
+`git log 4ac4d1a1..HEAD -- crates/sm-runtime-core/src/lib.rs crates/sm-vm/src/semcode_vm.rs`
+shows real, substantial activity in this window (#1725/#1726/#1756/#1773/
+#1820/#1821/#1891/#1718 and others), but every one of those commits is
+about ownership-path identity/timing, register/symbol-table verifier
+quotas, callable signatures, or the #1718 path-family authority - **none**
+touch `Steps`/`Calls`/`ConstPool`/`TraceEntries`/`trace_enabled`/
+`ExecutionContext` validation/`RuntimeTrap` construction. GitHub state alone
+(`OPEN`) is not being used as the sole basis for classification anywhere
+below - this is the independent falsification pass required by item 4.
+
+## 3. #1759 — Steps / Calls bounded execution
+
+**Fresh trace.** `crates/sm-runtime-core/src/lib.rs`: `QuotaKind::Steps` and
+`QuotaKind::Calls` exist (lines 136-137); every baseline profile
+(`verified_local`, `pure_compute`, `kernel_bound`) assigns finite values
+(100k/250k steps, 16384/32768 calls). `RuntimeQuotas::exceed` has a match
+arm for both. In `crates/sm-vm/src/semcode_vm.rs`, every `enforce_quota`
+call site was enumerated directly (not inferred): `QuotaKind::EffectCalls`
+(×2), `QuotaKind::Frames`, `QuotaKind::StackDepth`, `QuotaKind::Registers`
+(×2). **`QuotaKind::Steps` and `QuotaKind::Calls` appear in zero
+`enforce_quota` call sites.** A repository-wide search for any
+alternately-named counter (`steps_executed`, `step_count`, `instr_count`,
+`instructions_executed`, `call_count`, `calls_executed`, `fuel`) in
+`semcode_vm.rs` returned **zero matches**.
+
+**Falsification attempted:** searched for a hidden fuel/step counter under
+any other name (§ above, zero hits); searched git history since the audit
+SHA for any commit touching `enforce_quota`/`QuotaKind` (§2, zero hits).
+The finding is not obsolete.
+
+**Contract questions this would need frozen before implementation** (not
+answered here - these are exactly the open design decisions item 5 asks to
+surface, not resolve):
+- What counts as one step: every opcode fetched, every successfully
+  executed opcode, does a failing opcode still count, does `CALL` itself
+  count separately from the callee's own instructions?
+- What counts as one call: every `CALL`/`ClosureCall` attempt, only
+  successful `push_frame` completions, do host calls count, does the entry
+  function itself count as call #1?
+- Exhaustion timing: does the quota fire when `used == limit`, or when the
+  *next* charge would exceed the limit (`RuntimeQuotas::exceed`'s existing
+  convention, per `(used > limit).then_some(...)`, fires strictly *after*
+  the limit is exceeded, not at equality - any Steps/Calls implementation
+  should note this existing convention rather than inventing a new one).
+
+No normative doc (`docs/spec/quotas.md`, `docs/spec/vm.md`) answers these
+three questions today; they are genuinely open, not merely undocumented.
+
+**Reproduction (identified, not fixed):** a finite backward-loop program
+(e.g. an unconditional `JMP` back to a lower PC with no other quota
+tripped first) run through `run_verified_entry_semcode*` on the
+`verified_local` profile would execute indefinitely today - `StackDepth`/
+`Frames`/`Registers`/`EffectCalls` never fire for a flat backward jump with
+no calls, no growing register set, and no effect opcodes. A repeated-call
+reproduction (a function that calls itself or a helper `max_calls + 1`
+times without growing stack depth, e.g. via tail position or an iterative
+driver) would likewise never trip `Calls`, though it may incidentally trip
+`Frames` first depending on call shape - the two reproductions are
+independent and should both be constructed explicitly in the eventual
+implementation checkpoint's own test matrix, not assumed interchangeable.
+
+**Disposition: REQUIRED — IMPLEMENT.**
+**Why:** the published contract (`docs/spec/quotas.md`: "Runtime quotas
+define the bounded execution contract") is a bounded-*termination* promise
+for `max_steps` specifically - a verified, otherwise-admissible program can
+run forever today, which is the strongest possible violation among the five
+findings (P1, matches its own filed severity).
+**Authority:** `docs/spec/quotas.md` (self), `stable_foundation_target_contract.md`
+line 96 ("Execution remains verifier-first, deterministic, quota-bounded").
+**Dependencies:** none on the other four findings; #1763 depends on this
+one's outcome (see §10), not the reverse.
+**Smallest valid next checkpoint:** freeze the three contract questions
+above, then implement `Steps`/`Calls` charging at the two natural choke
+points (`push_frame` for calls - already the confirmed universal choke
+point per `docs/spec/vm.md`'s "Callable Runtime Family Enforcement" section;
+the instruction-dispatch loop for steps), with both a finite-backward-loop
+and a repeated-call regression test.
+
+## 4. #1760 — `trace_enabled` / `max_trace_entries`
+
+**Fresh trace.** Repository-wide (`grep -rn "trace_enabled"`, all `.rs`
+files, `target/` excluded): exactly two matches, both inside
+`ExecutionConfig`'s own definition in `crates/sm-runtime-core/src/lib.rs`
+(the field declaration and its `false` default in `ExecutionConfig::new`).
+**Zero production reads anywhere in the repository.** `QuotaKind::TraceEntries`/
+`max_trace_entries`: defined and given baseline values (4096/8192/16384
+across the three profiles); zero `enforce_quota` call sites (confirmed in
+the same enumeration as §3).
+
+**Distinguishing profiler/diagnostic/audit/trace** (required by item 6):
+this repository has a real, active, separate execution-trace-adjacent
+surface - the "7hell" diagnostics layer (`src/bin/smc.rs`,
+`SevenHellDiagnostic`) and `vm_opcode_profile`/`vm_opcode_profile_workloads`
+test harnesses (`crates/sm-vm/tests/`) - but neither reads
+`ExecutionConfig::trace_enabled` or charges `QuotaKind::TraceEntries`; they
+are independent, unrelated mechanisms (diagnostic reporting after a
+failure, and opcode-frequency profiling for benchmarking, not a bounded
+runtime trace-entry resource gated by this specific config field). This
+confirms `trace_enabled`/`TraceEntries` is not merely undocumented - it is
+architecturally disconnected from every trace-like mechanism that does
+exist.
+
+**Falsification attempted:** searched for any later trace resource under a
+renamed type or field (zero hits beyond the two definitional occurrences);
+searched git history (§2, zero hits).
+
+**Disposition: NEW DECISION REQUIRED BEFORE REPAIR** (not a default
+"implement it" - per item 6's explicit instruction not to build a feature
+merely because a field exists).
+**Why:** there is no evidence in `stable_foundation_target_contract.md` or
+any current-facing doc that a bounded, quota-governed execution trace is
+part of Semantic's Stable Foundation promise at all - unlike `#1759`
+(`max_steps`/`max_calls`), which is directly required by the already-stated
+"quota-bounded execution" contour, no equivalent statement commits Stable
+Foundation to a trace *resource*. The two live candidates are genuinely
+open:
+- **IMPLEMENT**: give `trace_enabled`/`max_trace_entries` a real production
+  consumer (own a trace buffer, charge per recorded entry, reject on
+  exhaustion) - only justified if Stable Foundation actually wants a
+  bounded execution trace as a runtime-visible resource, which is not
+  established today.
+- **NARROW/REMOVE**: `trace_enabled` and the `TraceEntries` quota kind are
+  currently inert public API surface with baseline numbers that look like
+  policy but govern nothing; the honest repair may be to remove them from
+  the *active* Stable Foundation runtime-quota contract (deprecate/delete
+  the field and quota kind, or explicitly re-label them "reserved,
+  unenforced" in `docs/spec/quotas.md`) rather than build a mechanism
+  solely to retroactively justify an existing field.
+**Authority:** no existing doc commits either way - this is exactly why it
+is a new decision, not an implementation default.
+**Dependencies:** informs #1763 (§10) - if `TraceEntries` is removed from
+`QuotaKind`, there is one fewer quota-exhaustion family for the taxonomy
+question to account for.
+**Smallest valid next checkpoint:** a short, dedicated decision checkpoint
+(no implementation) choosing IMPLEMENT vs NARROW/REMOVE for this one field
+pair, citing Stable Foundation's actual execution-trace requirements (or
+lack thereof).
+
+## 5. #1761 — `ConstPool` quota
+
+**Fresh trace.** `QuotaKind::ConstPool`/`max_const_pool`: defined,
+`65_536` in every baseline profile. Repository-wide search: only appears in
+`RuntimeQuotas`'s own field/constructor/`exceed`-match-arm definitions
+(`crates/sm-runtime-core/src/lib.rs`). Zero `enforce_quota` call sites.
+
+**Does a real "constant pool" resource exist under another name?**
+Inspected: instruction immediates (inline operands, not pooled), per-function
+string tables (`sm-format`'s function-local string table, capped by
+`MAX_STRINGS_PER_FUNCTION`/`MAX_STRING_LEN` in `sm-format`, a *decode-time
+structural* bound, not a `RuntimeQuotas`-governed one), the program-wide
+`RuntimeSymbolTable` (governed by `max_symbol_table`/`QuotaKind::SymbolTable`,
+a *different*, already-enforced quota kind - see §12), the decoded `SIG0`
+signature table (per-function, capped by
+`MAX_SIGNATURE_PARAMETERS_PER_FUNCTION` in `sm-format`, again a decode-time
+structural bound). **None of these is charged against, or even conceptually
+named, `max_const_pool`/`QuotaKind::ConstPool`.** There is no shared,
+runtime-resident "constant pool" object in this codebase that this quota
+kind could describe.
+
+**Falsification attempted:** searched for a real constant-pool
+representation under any other name (checked every candidate value-storage
+mechanism above; none matches); searched git history (§2, zero hits).
+
+**Disposition: REQUIRED — CONTRACT NARROWING (leaning REMOVE, pending a
+short decision pass).**
+**Why:** unlike `#1760`'s trace surface (where a bounded-trace *concept*
+could plausibly belong in Stable Foundation even if unimplemented),
+`ConstPool` describes a resource that has **no current architectural
+referent at all** - SemCode has no pooled-constant representation; values
+are either inline operands or per-function string-table entries governed
+by *different*, already-enforced bounds. This is a stronger case for
+removal than #1760's: there is nothing to "finish implementing," because
+the resource this quota kind names does not exist as a distinct concept in
+the current design.
+**Authority:** none - no current-facing doc claims a runtime constant pool
+exists as a named resource; `docs/spec/quotas.md` merely lists it alongside
+genuinely-enforced kinds, which is the overstatement itself.
+**Dependencies:** informs #1763 (§10), same as #1760.
+**Smallest valid next checkpoint:** decide whether `max_const_pool`/
+`QuotaKind::ConstPool` is removed outright or re-scoped to name an actual
+existing resource (e.g. redefining it to mean the per-function string table
+would be a *version-reviewed* meaning change per `docs/spec/quotas.md`'s
+own "Version Review Rule," not a free relabeling) - this is a genuine
+contract decision, not a mechanical deletion, so it should not be done as a
+side effect of another checkpoint.
+
+## 6. #1762 — `ExecutionContext` / quota identity
+
+**Fresh trace.** `ExecutionConfig::new(context, quotas)` (line 257) performs
+no validation that `quotas` matches the baseline `ExecutionContext::for_context(context)`
+would have produced - confirmed by direct reading, not inference.
+`crates/sm-vm/src/semcode_vm.rs` was searched for any `.context`/`config.context`
+read: **none found** - the VM enforces `vm.config.quotas` exclusively (every
+`enforce_quota` call site in §3 reads `&vm.config.quotas` or `quotas`
+parameters derived from it, never `config.context`). `crates/prom-runtime/src/lib.rs`:
+`RuntimeSessionDescriptor` (line 18) has exactly three fields - `context`,
+`capability_manifest`, `gate_registry_bound` - **no `quotas` field at all**;
+every construction site (lines 99, 242, 407) copies `context: config.context`
+verbatim, never the quota envelope. `crates/prom-audit/src/lib.rs`:
+`AuditSessionMetadata` (line 20) likewise has `context: ExecutionContext`
+and no quota field. `tests/ssf04_effect_quota.rs` confirms
+`ExecutionConfig::new(ExecutionContext::VerifiedLocal, <custom quotas>)` is
+an actively-used, legitimate test pattern today - not a hypothetical misuse
+this audit invented.
+
+**Falsification attempted:** searched for later validation logic in
+`ExecutionConfig::new`/`for_context` (none added since the audit SHA per
+§2's git-log check) and for any full-quota-envelope provenance recording in
+`prom-runtime`/`prom-audit` (none found - both structs are unchanged in
+shape from what the finding describes).
+
+**What does `ExecutionContext` normatively mean today?** Per fresh
+evidence, it is closest to **(C) a descriptive execution class only** -
+`for_context()` provides a *default* baseline mapping, but nothing in the
+type system, the VM, or the audit/provenance layer treats `context` as
+proof of which quotas actually governed execution, and a legitimate,
+tested seam (`ExecutionConfig::new`) exists specifically to decouple them.
+It is not (A) exact canonical identity (nothing enforces that), and
+calling it (B) "a baseline that may be tightened" would itself be a new,
+undecided policy statement, not a description of current behavior.
+
+**Disposition: NEW DECISION REQUIRED BEFORE REPAIR.**
+**Why:** this is a provenance/identity question, not a `used > limit`
+enforcement gap - the three candidate repairs listed in the governing brief
+(VALIDATE / RECORD / NARROW CLAIM) each imply a different, real policy
+choice:
+- VALIDATE would break the currently-legitimate `ssf04_effect_quota.rs`
+  custom-quota pattern unless it is explicitly re-scoped as an
+  intentionally-privileged internal test seam, not a general public API
+  guarantee.
+- RECORD (add `quotas: RuntimeQuotas` to `RuntimeSessionDescriptor`/
+  `AuditSessionMetadata`) preserves the existing flexibility but makes
+  provenance honest - this is the repair that most directly addresses the
+  filed gap ("audit records only the context label") without touching
+  execution semantics at all.
+- NARROW CLAIM (stop claiming `ExecutionContext` selects/proves the actual
+  quota envelope, document it as a descriptive label only) requires
+  updating `docs/spec/quotas.md`'s "context selects the runtime quota
+  baseline" language, which currently overstates the guarantee.
+**Authority:** `docs/spec/quotas.md`'s own "context selection is explicit"
+and "must not silently weaken the core safety contract" language is in
+tension with the current, legitimate custom-quota test seam - the tension
+itself is the thing to resolve, not a bug to patch mechanically.
+**Dependency on #1759 (explicit, as the brief requests):** confirmed real -
+if `Steps`/`Calls` remain inert, then a `RuntimeSessionDescriptor`/
+`AuditSessionMetadata` recording (say) `KernelBound`'s `max_steps = 250_000`
+would misleadingly imply that figure actually governed the run, when in
+current reality it governs nothing. **Any RECORD-style repair for #1762
+should land only after #1759's own disposition is settled**, or it risks
+recording quota values that are honest about *configuration* but dishonest
+by omission about *enforcement*.
+**Smallest valid next checkpoint:** a decision checkpoint (no
+implementation) choosing among VALIDATE/RECORD/NARROW CLAIM/a documented
+combination, informed by #1759's outcome.
+
+## 7. #1763 — `RuntimeTrap` / `RuntimeError` taxonomy
+
+**Fresh trace, exhaustive, not sampled.** `RuntimeTrap` (13 variants):
+`AssertionFailed`, `BorrowWriteConflict`, `StackOverflow`, `StackUnderflow`,
+`TypeMismatch`, `InvalidOpcode`, `InvalidJump`, `DivisionByZero`,
+`ArithmeticOverflow`, `CapabilityDenied`, `AbiViolation`, `VerifierRejected`,
+`QuotaExceeded(QuotaExceeded)`. A repository-wide search for
+`RuntimeTrap::<Variant>` construction in `crates/sm-vm/src/semcode_vm.rs`
+found constructions for **exactly four**: `AssertionFailed`,
+`BorrowWriteConflict`, `DivisionByZero`, `ArithmeticOverflow` - all reached
+only via `RuntimeError::Trap(RuntimeTrap::X)`. The remaining nine
+(`StackOverflow`, `StackUnderflow`, `TypeMismatch`, `InvalidOpcode`,
+`InvalidJump`, `CapabilityDenied`, `AbiViolation`, `VerifierRejected`,
+`QuotaExceeded`) have **zero construction sites anywhere in production
+code** - confirmed by direct grep, not sampling. Each of these nine has a
+same-named or same-shaped **top-level** `RuntimeError` variant that *is*
+constructed instead: `RuntimeError::StackOverflow`, `::StackUnderflow`,
+`::TypeMismatchRuntime`, `::InvalidJumpAddress` (`InvalidJump`'s
+counterpart), `::CapabilityDenied`, `::HostAbi` (`AbiViolation`'s
+counterpart), `::VerifierRejected`, `::QuotaExceeded` - confirmed
+constructed at real production call sites (`enforce_quota`, capability
+checks, `verify_semcode_token` wrapping, etc.). `InvalidOpcode` has no
+directly-named top-level counterpart but the equivalent failure surfaces as
+`RuntimeError::BadFormat`/`UnknownFunction`-family errors at load time,
+before a trap would even apply.
+
+`src/bin/smc.rs::vm_trap_message_needle` is a Rust-exhaustive match over
+all 13 `RuntimeTrap` variants (required by the compiler, since the enum has
+no wildcard arm) - this function's mere existence is exactly the kind of
+"exhaustive text mapping reinforcing the appearance that every variant is
+part of one authoritative channel" the issue itself names as a contributing
+cause, confirmed still true and still present verbatim. Separately, the CLI
+diagnostic dispatch at `src/bin/smc.rs` (~line 1400-1427) already correctly
+routes only the four real `RuntimeError::Trap(_)` cases through this
+function, and every other `RuntimeError` variant (including the nine
+"orphaned" `RuntimeTrap` names' actual top-level counterparts) through a
+separate `vm_error_code`/`VmError` path - **the CLI's own behavior already
+discriminates correctly; only the documentation and the enum shape
+overstate a unified channel.**
+
+**A new, current-SHA-specific finding beyond the original filing:**
+`docs/spec/vm.md`'s own "Trap And Error Model" section (its normative,
+current-facing list of "public runtime error families") **omits
+`AssertionFailed`, `DivisionByZero`, and `ArithmeticOverflow` entirely** -
+three families that *are* real, tested, production-constructed failure
+paths (reachable via `RuntimeError::Trap(RuntimeTrap::X)`). This means the
+documentation drift found here is not one-directional: `vm.md` both fails
+to mention real, live failure families and (via `trap_taxonomy.md`'s
+separate, cross-referenced evidence table) cites `RuntimeTrap::StackOverflow`
+as if it were the constructed value for the "Stack overflow" frozen trap
+class, when the actual production evidence is the top-level
+`RuntimeError::StackOverflow` variant, never the `RuntimeTrap` one.
+
+**Cross-reference to an independent, already-frozen authority
+(`docs/roadmap/language_maturity/core_trust_freeze/trap_taxonomy.md`,
+owned by a *different* governance track, CTF-2/PCC, not SSF-08):** this
+document's own "frozen trap classes" table (§3) already cites, for its
+"Quota exceeded" row, evidence of `crates/sm-runtime-core/src/lib.rs::QuotaExceeded`
+and `::RuntimeQuotas` directly - **not** `RuntimeTrap::QuotaExceeded` -
+which is the historically correct citation (this is exactly the top-level
+variant that is actually constructed). Its "Stack overflow" row, by
+contrast, cites `RuntimeTrap::StackOverflow` as evidence, which - per the
+fresh grep above - is imprecise: the constructed value is the top-level
+`RuntimeError::StackOverflow`. This means CTF-2's own frozen taxonomy
+already, implicitly, treats "one authoritative failure vocabulary spanning
+both `RuntimeError`'s top-level variants and `RuntimeTrap`'s four live
+variants" as the real contract - it is only imprecise in one evidence
+citation, not wrong about the underlying design. **This is significant for
+disposition**: it suggests SSF-08's own repair should not consolidate
+everything into `RuntimeTrap` (that would contradict an already-frozen,
+independently-owned CTF-2 authority that already accepts top-level
+`RuntimeError` variants as legitimate evidence for several frozen classes),
+but should instead **narrow `RuntimeTrap` to the four variants it actually
+has*, or explicitly document the split as intentional*.
+
+**Falsification attempted:** searched for later taxonomy consolidation
+work (§2's git log, zero hits) and for any changed normative doc language
+narrowing or reconciling the split (none found - `vm.md`'s list is
+unchanged in shape from what the issue describes, and still has its own,
+newly-identified omissions above).
+
+**Disposition: REQUIRED — CONTRACT NARROWING, but explicitly BLOCKED on
+#1759/#1760/#1761's own dispositions landing first (see §10).**
+**Why not SPLIT REPAIR (mass conversion) or IMPLEMENT (construct the
+missing nine):** constructing the nine orphaned `RuntimeTrap` variants
+would create genuine duplicate failure channels for conditions already
+correctly handled by top-level `RuntimeError` variants, and would
+contradict CTF-2's own already-frozen, evidence-cited taxonomy for several
+of those classes. The evidence points toward `RuntimeTrap` being narrowed
+to its four genuinely-live variants (`AssertionFailed`, `BorrowWriteConflict`,
+`DivisionByZero`, `ArithmeticOverflow` - the semantic-execution-trap
+subset), with the other nine variants either removed as dead code or
+explicitly redocumented as intentionally-unused/reserved, and `vm.md`
+corrected to list the real, complete current failure vocabulary (including
+the three currently-omitted live trap families).
+**Authority:** `trap_taxonomy.md` (independent, CTF-2-owned, already
+frozen, cross-checked above) plus the fresh code evidence in this section.
+**Dependencies:** `RuntimeTrap::QuotaExceeded(QuotaExceeded)`'s own
+disposition cannot be finalized until `#1759`/`#1760`/`#1761` settle which
+`QuotaKind` variants remain part of the active contract - narrowing
+`QuotaKind` first, then revisiting whether `RuntimeTrap::QuotaExceeded`
+should exist at all (given the top-level `RuntimeError::QuotaExceeded`
+already serves this role in production), avoids repairing the taxonomy
+twice.
+**Smallest valid next checkpoint:** last in Lane 5's own execution order
+(see §10) - a decision-plus-doc checkpoint correcting `vm.md`'s omissions,
+freezing which `RuntimeTrap` variants remain, and reconciling with
+`trap_taxonomy.md`'s own evidence citations, informed by the other four
+findings' final shape.
+
+## 8. New residual findings discovered during this audit
+
+Per item 11's explicit instruction, this section records findings outside
+the five filed issues rather than silently expanding implementation scope:
+
+1. **`docs/spec/vm.md`'s "Trap And Error Model" list omits three live
+   failure families** (`AssertionFailed`, `DivisionByZero`,
+   `ArithmeticOverflow`) — see §7. This is a documentation gap adjacent to,
+   but distinct from, #1763's own filed claim (which is about *unconstructed*
+   variants, not *unlisted* ones). Recorded here as a new residual finding,
+   not folded into #1763's disposition text as if it were the same defect.
+2. **`docs/roadmap/language_maturity/core_trust_freeze/trap_taxonomy.md`'s
+   own evidence citation for "Stack overflow" is imprecise** (cites
+   `RuntimeTrap::StackOverflow`; the actual constructed value is the
+   top-level `RuntimeError::StackOverflow`) — see §7. This document is owned
+   by a different governance track (CTF-2/PCC), not SSF-08; SSF-08 cannot
+   correct it unilaterally. Recorded here as a cross-track finding to
+   surface, not to repair.
+3. **`SymbolTable` is a `RuntimeQuotas`-sourced quota kind enforced at the
+   *verifier* layer, not the VM**, contradicting `docs/spec/quotas.md`'s own
+   blanket "Enforcement owner: `sm-vm`" ownership statement — see §12. This
+   is not a safety gap (the quota genuinely is enforced, just not by the
+   crate the spec names), but it is a documentation-precision gap worth
+   fixing alongside whatever else touches `quotas.md`.
+
+Neither of these three is added to Lane 5's implementation scope by this
+audit. They are recorded for a future, explicitly-scoped decision, per the
+governing brief's own instruction not to silently expand scope.
+
+## 9. Cross-issue interaction audit
+
+The governing brief's own candidate graph was tested against the fresh
+evidence above and **holds**, with one addition (the `SymbolTable`/verifier
+distinction in §12, which does not change the graph's shape but explains
+why it is not itself a sixth finding):
+
+```
+#1759  Steps/Calls (bounded execution, P1)
+   │
+   └──────────────────────────────┐
+                                   ↓
+#1760  TraceEntries ──┐      #1763 taxonomy
+#1761  ConstPool ─────┴──→ (QuotaKind shape feeds RuntimeTrap::QuotaExceeded's
+                             own disposition)
+   │
+#1762  context/provenance (independent decision; informed by, not blocking,
+                            #1759's outcome - see §6)
+```
+
+**Attempted falsification of this graph:** could `#1763` be resolved
+*before* `#1759`/`#1760`/`#1761`? Only partially - the four genuinely-live
+`RuntimeTrap` variants (`AssertionFailed`/`BorrowWriteConflict`/
+`DivisionByZero`/`ArithmeticOverflow`) and the `vm.md` omission fix (§8,
+finding 1) do not depend on the quota findings at all and *could* move
+independently. Only the `QuotaExceeded` variant's specific fate is
+genuinely blocked. This means #1763 is not a strict single blocking
+dependency - it is **splittable**: the non-quota-related taxonomy
+corrections could proceed in parallel with #1759-#1761, while only the
+`QuotaExceeded`-variant question waits. This refines, rather than
+contradicts, the original hypothesis that #1763 belongs last as a whole.
+Could `#1762` depend on `#1760`/`#1761` too, not just `#1759`? Checked: no
+- `#1762`'s provenance-recording question is orthogonal to which specific
+`QuotaKind` variants are active; it would apply equally whether `Steps`
+alone or all four inert kinds end up implemented/removed. The dependency is
+specifically and only on `#1759`, as stated in §6.
+
+## 10. RuntimeQuotas / QuotaKind full inventory
+
+| Quota kind | Public field | Finite baseline | Actual runtime resource | Enforcement site | Charge point | Exhaustion error | Positive test | Negative/exhaustion test | Docs | Status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `Frames` | `max_frames` | 256/256/256 | Call-stack frame count | `sm-vm` (`push_frame`) | frame push | `RuntimeError::QuotaExceeded` | yes | yes (existing suite) | `quotas.md` | **ACTIVE** |
+| `StackDepth` | `max_stack_depth` | 256/256/256 | Effective stack depth | `sm-vm` (`push_frame`) | frame push | `RuntimeError::StackOverflow` (compat: surfaced as `StackOverflow`, not `QuotaExceeded`, per `quotas.md`'s own documented compatibility note) | yes | yes (existing suite) | `quotas.md` | **ACTIVE** |
+| `Registers` | `max_registers` | 4096/4096/8192 | Register vector growth | `sm-vm` (frame init + growth) | register write | `RuntimeError::QuotaExceeded` | yes | yes (existing suite) | `quotas.md` | **ACTIVE** |
+| `EffectCalls` | `max_effect_calls` | 1024/0/4096 | Effect-opcode invocation count | `sm-vm` (`bump_effect_calls`) | effect opcode dispatch | `RuntimeError::QuotaExceeded` | yes | yes (existing suite) | `quotas.md` | **ACTIVE** |
+| `SymbolTable` | `max_symbol_table` | 16384 (all profiles) | Program-wide unique runtime symbol count | **`sm-verify`** (not `sm-vm` - see §12) | pre-execution, at admission | verifier `RejectReport` | yes | yes (#1820 suite) | `quotas.md` (ownership line inaccurate, §8) | **ACTIVE, wrong layer documented** |
+| `Steps` | `max_steps` | 100000/100000/250000 | *none* | *none* | *none* | *none* | no | no | `quotas.md` | **INERT** (#1759) |
+| `Calls` | `max_calls` | 16384/16384/32768 | *none* | *none* | *none* | *none* | no | no | `quotas.md` | **INERT** (#1759) |
+| `ConstPool` | `max_const_pool` | 65536 (all profiles) | *none - no referent concept exists* | *none* | *none* | *none* | no | no | `quotas.md` | **INERT, no referent** (#1761) |
+| `TraceEntries` | `max_trace_entries` | 8192/4096/16384 | *none* | *none* | *none* | *none* | no | no | `quotas.md` | **INERT** (#1760) |
+
+Every `QuotaKind` variant is accounted for above; no sixth inert kind was
+found beyond the four already filed (`Steps`, `Calls`, `ConstPool`,
+`TraceEntries`).
+
+## 11. Verifier limits vs runtime quotas (architecture check)
+
+Confirmed the architecture keeps these two resource domains genuinely
+separate, per `docs/spec/verifier.md`'s own "Verifier resource budgets"
+section (re-confirmed fresh, unchanged since the #1718 checkpoint's own
+reading of this file):
+
+- **Bounded before execution** (`VerificationLimits`, `sm-verify` alone):
+  `max_work_units` (whole-artifact static-analysis work), `max_state_words`
+  (peak static-analysis memory) - governs the definite-register-assignment
+  pass (#1756) only, reported as `AnalysisStateLimitExceeded`/
+  `AnalysisWorkLimitExceeded`.
+- **Bounded during execution** (`RuntimeQuotas`, `sm-runtime-core`/`sm-vm`):
+  the nine kinds in §10's table.
+- **A third, distinct domain**: artifact/decode-time byte-level limits
+  (`sm-format`, `MAX_FUNCTIONS`/`MAX_STRINGS_PER_FUNCTION`/etc.), reported
+  as `ResourceLimitExceeded`, structurally separate from both of the above.
+
+`#1751`'s own ruling (cited in `verifier.md`) that conflating a dynamic
+execution resource with a static verifier bound is unsound remains the
+correct authority: **`max_steps`'s missing enforcement must not be "fixed"
+by moving step-counting into the verifier.** A verified backward loop must
+still be bounded at *runtime*, by the VM, if bounded execution is the
+published promise - static analysis cannot prove termination of an
+admissible unbounded loop, so this is not an available shortcut, and no
+evidence in this repository suggests anyone has attempted that shortcut.
+
+The `SymbolTable` case (§10) is the one quota kind that crosses this
+boundary in an interesting way: it is a `RuntimeQuotas`-sourced value
+(shared taxonomy, `sm-runtime-core`-owned) but is actually charged at
+*verifier admission time*, before execution - this is architecturally
+sound (the count is knowable statically from the decoded program, so
+proving it before execution is strictly stronger than checking it at
+runtime), but it means `quotas.md`'s blanket "Enforcement owner: `sm-vm`"
+statement is imprecise for this one kind (§8, finding 3).
+
+## 12. AC4 decomposition into testable subcriteria
+
+Rewriting AC4 ("Resource quotas and failure taxonomy are explicit") into
+explicit, testable subcriteria, checked against Position A and the current
+target contract for over-strengthening:
+
+- **AC4.a** — Every quota advertised as an active runtime bound has an
+  authoritative resource, charge point, deterministic exhaustion behavior,
+  and test. *(Currently satisfied for `Frames`/`StackDepth`/`Registers`/
+  `EffectCalls`/`SymbolTable`; not satisfied for `Steps`/`Calls`.)*
+- **AC4.b** — Inert/deferred resource concepts are not presented as
+  enforced runtime quotas. *(Not satisfied: `ConstPool` and, pending a
+  decision, `TraceEntries` are presented as enforced quota kinds in
+  `docs/spec/quotas.md` today without qualification.)*
+- **AC4.c** — `ExecutionContext`/provenance does not overstate the quota
+  envelope that actually governed execution. *(Not satisfied: `prom-runtime`/
+  `prom-audit` record only the context label, and nothing validates
+  context/quota consistency at construction.)*
+- **AC4.d** — Verification rejection, runtime quota exhaustion, semantic
+  trap, capability denial, and host/ABI failure have an explicit,
+  deterministic taxonomy that matches what production code actually
+  constructs. *(Not satisfied: nine of thirteen `RuntimeTrap` variants are
+  never constructed, and `vm.md`'s own list is incomplete in the other
+  direction.)*
+- **AC4.e** — Public docs (`docs/spec/quotas.md`, `docs/spec/vm.md`,
+  `trap_taxonomy.md` insofar as SSF-08 can influence a cross-track
+  document) match the actual failure/resource authority present in code.
+  *(Not satisfied per §8's three residual findings.)*
+
+These subcriteria refine, but do not strengthen, #1579's existing AC4 text
+- they decompose one broad acceptance line into checkable parts already
+implied by "explicit," without adding any new promise Position A did not
+already make (in particular, AC4.b explicitly permits narrowing/removal as
+a valid closure path, not just implementation, matching Position A's own
+bounded, deterministic-VM framing rather than an aspirational one).
+
+## 13. Minimal Lane 5 DAG
+
+```
+Track A — bounded execution (safety-priority, P1)
+  #1759
+
+Track B — inert quota/config vocabulary (decision-then-repair)
+  #1760  (independent decision: implement vs narrow/remove)
+  #1761  (independent decision: implement vs narrow/remove - evidence favors narrow/remove)
+
+Track C — configuration/provenance identity (decision-then-repair)
+  #1762  (depends on #1759's outcome for its RECORD option specifically;
+          the decision itself can start in parallel)
+
+Track D — failure taxonomy (partially blocked)
+  #1763  non-quota-related corrections (vm.md omissions, RuntimeTrap
+          narrowing for the 8 non-quota orphaned variants) — independent,
+          can run in parallel with A/B/C
+  #1763  QuotaExceeded-variant disposition — blocked on B (Tracks #1760/#1761)
+          settling which QuotaKind variants remain active
+```
+
+**Parallelizable:** Tracks A, B, and C's own decision passes may all start
+independently and in parallel - none of their *investigative/decision*
+work depends on another track's completion. Track D's non-quota half is
+likewise independent. **Sequencing constraint:** Track D's quota-related
+half (the `RuntimeTrap::QuotaExceeded` question) must wait for Track B's
+final disposition; Track C's RECORD-style repair option (not its decision
+pass) is strongest once Track A's disposition is known.
+
+**Exact next issue/checkpoint (not started by this audit):** `#1759`
+(Track A) - the sole P1, the only finding that breaks a stated safety
+promise outright (bounded execution), and the only one with no
+architectural ambiguity about whether repair is even wanted (unlike
+`#1760`/`#1761`, which may resolve to removal rather than implementation).
+Its own first step is a small, docs-scoped decision pass freezing the three
+contract questions in §3 (step/call counting semantics, exhaustion timing)
+- not code - before any counter is added.
+
+## 14. Verdicts
+
+**Lane 5 READY TO IMPLEMENT: NO** — three of five findings (`#1760`,
+`#1761`, `#1762`) require an explicit contract decision before any
+implementation-shaped repair is well-defined, and `#1763` is partially
+blocked on those decisions. Only `#1759` has an unambiguous
+implementation-required disposition, and even it needs its own three
+contract questions (§3) frozen first.
+
+**AC4 SATISFIED: NO.**
+
+**SSF-08 umbrella #1579 remains OPEN: YES.**
+
+No production Rust changed while producing this document.
