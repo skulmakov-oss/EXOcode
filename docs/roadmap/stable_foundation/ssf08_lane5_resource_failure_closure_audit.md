@@ -206,17 +206,23 @@ kind could describe.
 representation under any other name (checked every candidate value-storage
 mechanism above; none matches); searched git history (§2, zero hits).
 
-**Disposition: REQUIRED — CONTRACT NARROWING (leaning REMOVE, pending a
-short decision pass).**
+**Disposition: REQUIRED — CONTRACT NARROWING.** The narrowing *direction*
+is frozen by this audit - unlike `#1760`, this is not left as an open
+implement-or-remove question. Only the exact *mechanism* remains a short
+decision: REMOVE `max_const_pool`/`QuotaKind::ConstPool` outright, or
+explicitly re-scope the field under a newly-authorized contract meaning
+(which `docs/spec/quotas.md`'s own "Version Review Rule" requires treating
+as a genuine version-reviewed decision, not a free relabeling).
 **Why:** unlike `#1760`'s trace surface (where a bounded-trace *concept*
 could plausibly belong in Stable Foundation even if unimplemented),
 `ConstPool` describes a resource that has **no current architectural
 referent at all** - SemCode has no pooled-constant representation; values
 are either inline operands or per-function string-table entries governed
-by *different*, already-enforced bounds. This is a stronger case for
-removal than #1760's: there is nothing to "finish implementing," because
-the resource this quota kind names does not exist as a distinct concept in
-the current design.
+by *different*, already-enforced bounds. This is a stronger case than
+#1760's: there is nothing to "finish implementing," because the resource
+this quota kind names does not exist as a distinct concept in the current
+design - the only open question is how the narrowing is executed, not
+whether it happens.
 **Authority:** none - no current-facing doc claims a runtime constant pool
 exists as a named resource; `docs/spec/quotas.md` merely lists it alongside
 genuinely-enforced kinds, which is the overstatement itself.
@@ -379,8 +385,14 @@ narrowing or reconciling the split (none found - `vm.md`'s list is
 unchanged in shape from what the issue describes, and still has its own,
 newly-identified omissions above).
 
-**Disposition: REQUIRED — CONTRACT NARROWING, but explicitly BLOCKED on
-#1759/#1760/#1761's own dispositions landing first (see §10).**
+**Disposition: REQUIRED — CONTRACT NARROWING, SPLITTABLE.** The
+non-quota-related eight variants (`StackOverflow`, `StackUnderflow`,
+`TypeMismatch`, `InvalidOpcode`, `InvalidJump`, `CapabilityDenied`,
+`AbiViolation`, `VerifierRejected`) and the `vm.md` omission fix are
+independent of every other Lane 5 finding and may proceed on their own.
+Only `RuntimeTrap::QuotaExceeded(QuotaExceeded)`'s specific fate is blocked
+- and only on `#1760`/`#1761` (see §10 and the correction below), not on
+`#1759`.
 **Why not SPLIT REPAIR (mass conversion) or IMPLEMENT (construct the
 missing nine):** constructing the nine orphaned `RuntimeTrap` variants
 would create genuine duplicate failure channels for conditions already
@@ -396,12 +408,17 @@ the three currently-omitted live trap families).
 **Authority:** `trap_taxonomy.md` (independent, CTF-2-owned, already
 frozen, cross-checked above) plus the fresh code evidence in this section.
 **Dependencies:** `RuntimeTrap::QuotaExceeded(QuotaExceeded)`'s own
-disposition cannot be finalized until `#1759`/`#1760`/`#1761` settle which
+disposition cannot be finalized until `#1760`/`#1761` settle which
 `QuotaKind` variants remain part of the active contract - narrowing
 `QuotaKind` first, then revisiting whether `RuntimeTrap::QuotaExceeded`
 should exist at all (given the top-level `RuntimeError::QuotaExceeded`
 already serves this role in production), avoids repairing the taxonomy
-twice.
+twice. **`#1759` is explicitly not part of this dependency**: it decides
+whether `Steps`/`Calls` charging becomes *real*, not whether `QuotaKind`'s
+own variant set changes shape - `Steps` and `Calls` remain declared
+`QuotaKind` variants either way, and the failure channel they would use on
+exhaustion (`RuntimeError::QuotaExceeded`, already live) is unaffected by
+`#1759`'s own disposition.
 **Smallest valid next checkpoint:** last in Lane 5's own execution order
 (see §10) - a decision-plus-doc checkpoint correcting `vm.md`'s omissions,
 freezing which `RuntimeTrap` variants remain, and reconciling with
@@ -440,34 +457,51 @@ governing brief's own instruction not to silently expand scope.
 ## 9. Cross-issue interaction audit
 
 The governing brief's own candidate graph was tested against the fresh
-evidence above and **holds**, with one addition (the `SymbolTable`/verifier
-distinction in §12, which does not change the graph's shape but explains
-why it is not itself a sixth finding):
+evidence above and required one correction: the initial pass in this audit
+drew `#1759` feeding into `#1763`'s own dependency, which does not survive
+a second, more careful falsification pass (below) - `#1759` decides
+whether `Steps`/`Calls` charging becomes *real*, not whether `QuotaKind`'s
+own variant set changes shape, and `RuntimeTrap::QuotaExceeded`'s fate
+depends only on the latter. Corrected graph (with the `SymbolTable`/verifier
+distinction in §12 noted as an addition that does not change the graph's
+shape, only explains why it is not itself a sixth finding):
 
 ```
 #1759  Steps/Calls (bounded execution, P1)
-   │
-   └──────────────────────────────┐
-                                   ↓
-#1760  TraceEntries ──┐      #1763 taxonomy
-#1761  ConstPool ─────┴──→ (QuotaKind shape feeds RuntimeTrap::QuotaExceeded's
+       — independent track, does not feed #1763
+
+#1760  TraceEntries ──┐
+                       ├──→ final quota-related #1763 reconciliation
+#1761  ConstPool ──────┘    (QuotaKind shape feeds RuntimeTrap::QuotaExceeded's
                              own disposition)
-   │
-#1762  context/provenance (independent decision; informed by, not blocking,
-                            #1759's outcome - see §6)
+
+#1762  context/provenance decision — independent, may start immediately;
+                            RECORD-style *implementation* (not the decision
+                            itself) should follow #1759's own outcome - see §6
+
+#1763  non-quota taxonomy work — independent, may start immediately
+#1763  QuotaExceeded-variant question — waits on #1760/#1761 only
 ```
 
 **Attempted falsification of this graph:** could `#1763` be resolved
-*before* `#1759`/`#1760`/`#1761`? Only partially - the four genuinely-live
-`RuntimeTrap` variants (`AssertionFailed`/`BorrowWriteConflict`/
-`DivisionByZero`/`ArithmeticOverflow`) and the `vm.md` omission fix (§8,
-finding 1) do not depend on the quota findings at all and *could* move
-independently. Only the `QuotaExceeded` variant's specific fate is
-genuinely blocked. This means #1763 is not a strict single blocking
-dependency - it is **splittable**: the non-quota-related taxonomy
-corrections could proceed in parallel with #1759-#1761, while only the
-`QuotaExceeded`-variant question waits. This refines, rather than
-contradicts, the original hypothesis that #1763 belongs last as a whole.
+*before* `#1760`/`#1761`? Only partially - the eight genuinely-live and
+dead-code-adjacent non-quota `RuntimeTrap` variants (`AssertionFailed`/
+`BorrowWriteConflict`/`DivisionByZero`/`ArithmeticOverflow` plus the five
+never-constructed ones with no quota relationship) and the `vm.md` omission
+fix (§8, finding 1) do not depend on the quota findings at all and *could*
+move independently. Only the `QuotaExceeded` variant's specific fate is
+genuinely blocked, and only on `#1760`/`#1761` - **not on `#1759`**, which
+was the initial drafting error this correction fixes: `#1759` governs
+whether `Steps`/`Calls` are actually charged at runtime, a question that
+does not touch which `QuotaKind` variants exist or which `RuntimeError`
+channel their exhaustion already uses (`RuntimeError::QuotaExceeded`,
+already live regardless of `#1759`'s outcome). This means #1763 is not a
+strict single blocking dependency - it is **splittable**: the non-quota-related
+taxonomy corrections could proceed in parallel with every other Lane 5
+track, while only the `QuotaExceeded`-variant question waits, and only on
+`#1760`/`#1761`. This corrects, rather than merely refines, the original
+hypothesis that #1763 belongs last as a whole - only one narrow slice of
+it does; the rest is independent from the start.
 Could `#1762` depend on `#1760`/`#1761` too, not just `#1759`? Checked: no
 - `#1762`'s provenance-recording question is orthogonal to which specific
 `QuotaKind` variants are active; it would apply equally whether `Steps`
@@ -571,8 +605,9 @@ Track A — bounded execution (safety-priority, P1)
   #1759
 
 Track B — inert quota/config vocabulary (decision-then-repair)
-  #1760  (independent decision: implement vs narrow/remove)
-  #1761  (independent decision: implement vs narrow/remove - evidence favors narrow/remove)
+  #1760  (open decision: implement vs narrow/remove)
+  #1761  (narrowing direction frozen - REQUIRED, CONTRACT NARROWING; only
+          the exact mechanism, remove vs re-scope, needs a short decision)
 
 Track C — configuration/provenance identity (decision-then-repair)
   #1762  (depends on #1759's outcome for its RECORD option specifically;
@@ -598,19 +633,23 @@ pass) is strongest once Track A's disposition is known.
 (Track A) - the sole P1, the only finding that breaks a stated safety
 promise outright (bounded execution), and the only one with no
 architectural ambiguity about whether repair is even wanted (unlike
-`#1760`/`#1761`, which may resolve to removal rather than implementation).
-Its own first step is a small, docs-scoped decision pass freezing the three
-contract questions in §3 (step/call counting semantics, exhaustion timing)
-- not code - before any counter is added.
+`#1760`, which is still genuinely open between implement and remove, and
+`#1762`, which needs a policy choice among VALIDATE/RECORD/NARROW CLAIM;
+`#1761`'s *direction* is already frozen by this audit, with only its exact
+mechanism left open). Its own first step is a small, docs-scoped decision
+pass freezing the three contract questions in §3 (step/call counting
+semantics, exhaustion timing) - not code - before any counter is added.
 
 ## 14. Verdicts
 
-**Lane 5 READY TO IMPLEMENT: NO** — three of five findings (`#1760`,
-`#1761`, `#1762`) require an explicit contract decision before any
-implementation-shaped repair is well-defined, and `#1763` is partially
-blocked on those decisions. Only `#1759` has an unambiguous
-implementation-required disposition, and even it needs its own three
-contract questions (§3) frozen first.
+**Lane 5 READY TO IMPLEMENT: NO** — `#1760` and `#1762` still require an
+open contract decision before any implementation-shaped repair is
+well-defined; `#1761`'s narrowing direction is frozen but its exact
+mechanism (remove vs. re-scope) still needs a short decision; `#1763` is
+partially blocked, on `#1760`/`#1761` only, for its `QuotaExceeded`-variant
+slice alone. Only `#1759` has an unambiguous implementation-required
+disposition, and even it needs its own three contract questions (§3) frozen
+first.
 
 **AC4 SATISFIED: NO.**
 
