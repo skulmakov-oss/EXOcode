@@ -117,11 +117,13 @@ Per-issue disposition summary: `#1759` (`Steps`/`Calls` bounded execution,
 P1) - REQUIRED, IMPLEMENT, no architectural ambiguity, the sole safety-critical
 finding, but blocked on freezing three contract questions (step/call
 counting semantics, exhaustion timing) before any code. `#1760`
-(`trace_enabled`/`TraceEntries`) and `#1761` (`ConstPool`) - NEW DECISION
-REQUIRED BEFORE REPAIR; evidence for `#1761` specifically leans toward
-contract narrowing/removal rather than implementation, since no
-architectural referent for a "constant pool" resource exists in the current
-design at all. `#1762` (`ExecutionContext`/quota provenance) - NEW DECISION
+(`trace_enabled`/`TraceEntries`) - NEW DECISION REQUIRED BEFORE REPAIR,
+genuinely open between implement and remove. `#1761` (`ConstPool`) -
+REQUIRED, CONTRACT NARROWING: unlike `#1760`, the narrowing *direction* is
+already frozen by the audit (no architectural referent for a "constant
+pool" resource exists in the current design at all), leaving only the exact
+mechanism (remove outright vs. re-scope under a newly-authorized contract)
+as a short remaining decision. `#1762` (`ExecutionContext`/quota provenance) - NEW DECISION
 REQUIRED BEFORE REPAIR, genuinely dependent on `#1759`'s outcome for its
 strongest repair option (recording the actual quota envelope is only
 meaningful once `Steps`/`Calls` participate in it). `#1763` (`RuntimeTrap`/
