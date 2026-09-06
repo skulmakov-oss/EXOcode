@@ -64,6 +64,41 @@ conclusion - REQUIRED, remedy-agnostic - is still accurate; only its "which
 remedy" open question is now resolved, fully, by the linked decision
 document.
 
+**2026-09-06 addendum #3 — #1718 implemented, qualified, merged, and closed.**
+PR #1896 (six checkpoint commits: I1+I3 format authority/decode gating, I2
+emitter promotion, I4 independent verifier enforcement, I4.1 a
+directly-testable extraction of that verifier policy closing a coverage gap
+mutation testing found, I5 test reconciliation, I6 docs) implements exactly
+the frozen contract from addendum #2 - `HEADER_V21`/`SEMCOD21` (rev 22),
+purely additive over `HEADER_V20`, two new capability bits
+(`CAP_OWNERSHIP_SEQUENCE_PATHS`, `CAP_OWNERSHIP_ADT_BORROW_PATHS`). Six
+mutation-testing falsification passes (M1: emitter promotion: M2: decoder
+legacy gate; M3: ADT Borrow promotion; M4a: decoder `Write(AdtPayload)`
+rejection; M4b: verifier's own independent `Write(AdtPayload)` rejection;
+M5: generic-capability-reinterpretation fallback), each independently
+confirmed load-bearing by deletion-then-restoration against a real test, not
+merely read from source. Rebase-merged to `main` at `b2fce6e2041661e3d08a3a196322f082a5f7c24f`
+(6 checkpoint commits preserved individually); hosted CI/security green on
+that exact SHA; #1718 auto-closed as completed via the PR's `Closes #1718`.
+Exact-main replay (`sm-verify` 218/218, `sequence_ownership_golden`,
+`runtime_ownership_e2e`, `borrow_activation_v20`, `write_execution_site_e2e`,
+all green; `git diff --check` clean) confirms the merged tree matches what
+was qualified pre-merge.
+
+Independent re-evaluation (not a mechanical "the checkpoint closed, so mark
+satisfied" pass - the prior #1888 mis-classification in this same document is
+the exact reason a fresh check is required here): a fresh GitHub search
+(`SSF-08 ownership`) and a fresh read of #1579's own body/comments found no
+other issue, open or newly filed, blocking AC1, AC2, or AC5 beyond #1718.
+#1885 and #1778 remain independently classified (§8, unaffected by this
+checkpoint); #1617 (a much older, broader, platform-wide 18-module
+self-deception audit umbrella) lists `sm-ir` ownership as one unchecked
+inventory line among many but is not linked to #1579 as a scoped blocker and
+predates this entire program - not treated as a residual #1579 blocker on
+that basis. AC1/AC2/AC5's own §3 rows below are updated accordingly, with
+the original "PARTIALLY SATISFIED, #1718" text struck through rather than
+deleted.
+
 ## 1. Position A — frozen claim (authoritative)
 
 Recorded in `docs/roadmap/stable_foundation/ssf08_ownership_position_decision.md`,
@@ -108,11 +143,11 @@ qualification evidence, never on that thread's narrative alone.
 
 | # | Criterion | Authoritative contract | Implementation evidence | Test/qualification evidence | Unresolved blocker(s) | Verdict |
 |---|---|---|---|---|---|---|
-| AC1 | Public ownership/memory claim matches implementation evidence | `ssf08_ownership_position_decision.md`; `docs/spec/semcode.md`; `docs/spec/runtime_ownership.md` | `docs/spec/runtime_ownership.md`'s tuple/record slice matches implementation exactly (post-#1726/#1891). `docs/spec/semcode.md`'s SEMCOD11-tuple-only claim does **not** match implementation: verifier/VM already admit and enforce ADT payload and Sequence static-index ownership paths under that same header family (#1718, confirmed still reproducible §7). | Overclaim scan of current-facing docs (README, LANGUAGE.md, getting_started, status/*, roadmap/public_*, spec/*): zero overclaim hits — every "Rust-equivalent"/"borrow checker"/"lifetime" mention found is an explicit denial, not a claim. | #1718 | **PARTIALLY SATISFIED** — clean in the direction of overclaiming (AC6 territory); violated in the opposite direction (implementation exceeds a *different* document's declared contract without a version/capability bump). |
-| AC2 | Aggregate/path/frame/host ownership behavior documented and tested | `runtime_ownership.md`; decision record's "Included/Deferred Ownership Surface" tables | tuple: frozen, D7-qualified. record (direct field): frozen, D7-qualified. ADT payload: real positive E2E (`vm_runs_adt_payload_ownership_positive_e2e_path`), but verifier admission for the variant `SymbolId` is "structural acceptance only" (no bounds check), and no compiler-driven negative E2E exists yet (frontend has no ADT-payload reassignment syntax). Sequence static index: real positive+negative E2E (`tests/sequence_ownership_golden.rs`, `runtime_ownership_e2e.rs`), stronger proof than ADT. Map: no frontend `AccessPath` resolution exists at all (deliberate, honest absence, not a partial gap). Frame boundary: `push_frame` never merges caller state into callee (D2b-proven, inter-frame persistence structurally impossible). Host boundary: zero ownership state crosses it today (clean by construction); a *separate*, non-ownership value-canonicality gap exists there (#1778, §8). | `borrow_activation_v20` 9/9, `write_cursor_1891_repro` 4/4, `write_execution_site_e2e` 10/10, `sequence_ownership_golden.rs`, `record_field_ownership_golden.rs`, ADT payload tests in `crates/sm-vm/src/semcode_vm.rs`. | #1718 (ADT/Sequence not yet a declared, versioned, frozen capability) | **PARTIALLY SATISFIED** — tuple/record/frame/host-ownership solid; ADT/Sequence implemented and tested but not contractually promoted; Map correctly out of scope. |
+| AC1 | Public ownership/memory claim matches implementation evidence | `ssf08_ownership_position_decision.md`; `docs/spec/semcode.md`; `docs/spec/runtime_ownership.md` | `docs/spec/runtime_ownership.md`'s tuple/record slice matches implementation exactly (post-#1726/#1891). `docs/spec/semcode.md`'s SEMCOD11-tuple-only claim does **not** match implementation: verifier/VM already admit and enforce ADT payload and Sequence static-index ownership paths under that same header family (#1718, confirmed still reproducible §7). | Overclaim scan of current-facing docs (README, LANGUAGE.md, getting_started, status/*, roadmap/public_*, spec/*): zero overclaim hits — every "Rust-equivalent"/"borrow checker"/"lifetime" mention found is an explicit denial, not a claim. | #1718 | ~~**PARTIALLY SATISFIED** — clean in the direction of overclaiming (AC6 territory); violated in the opposite direction (implementation exceeds a *different* document's declared contract without a version/capability bump).~~ **Superseded 2026-09-06 (addendum #3)**: #1718 merged (PR #1896, `main` `b2fce6e2041661e3d08a3a196322f082a5f7c24f`) — `docs/spec/semcode.md`'s SEMCOD21 section, `docs/spec/verifier.md`, and `docs/spec/runtime_ownership.md` now describe exactly what the implementation admits (Sequence Borrow+Write, ADT Borrow only, `Write(AdtPayload)` explicitly excluded), and the previously-stale `docs/architecture/adt_payload_ownership_paths.md` was corrected in the same PR. **SATISFIED** — no known residual document/implementation mismatch for ownership found on fresh re-check (see addendum #3). |
+| AC2 | Aggregate/path/frame/host ownership behavior documented and tested | `runtime_ownership.md`; decision record's "Included/Deferred Ownership Surface" tables | tuple: frozen, D7-qualified. record (direct field): frozen, D7-qualified. ADT payload: real positive E2E (`vm_runs_adt_payload_ownership_positive_e2e_path`), but verifier admission for the variant `SymbolId` is "structural acceptance only" (no bounds check), and no compiler-driven negative E2E exists yet (frontend has no ADT-payload reassignment syntax). Sequence static index: real positive+negative E2E (`tests/sequence_ownership_golden.rs`, `runtime_ownership_e2e.rs`), stronger proof than ADT. Map: no frontend `AccessPath` resolution exists at all (deliberate, honest absence, not a partial gap). Frame boundary: `push_frame` never merges caller state into callee (D2b-proven, inter-frame persistence structurally impossible). Host boundary: zero ownership state crosses it today (clean by construction); a *separate*, non-ownership value-canonicality gap exists there (#1778, §8). | `borrow_activation_v20` 9/9, `write_cursor_1891_repro` 4/4, `write_execution_site_e2e` 10/10, `sequence_ownership_golden.rs`, `record_field_ownership_golden.rs`, ADT payload tests in `crates/sm-vm/src/semcode_vm.rs`. | #1718 (ADT/Sequence not yet a declared, versioned, frozen capability) | ~~**PARTIALLY SATISFIED** — tuple/record/frame/host-ownership solid; ADT/Sequence implemented and tested but not contractually promoted; Map correctly out of scope.~~ **Superseded 2026-09-06 (addendum #3)**: #1718 merged - Sequence (Borrow+Write) and ADT (Borrow-only) are now declared, versioned (`HEADER_V21`/`SEMCOD21`), frozen capabilities, documented in `runtime_ownership.md`'s "Current supported slice," and tested by the full I5 matrix plus I4.1's direct verifier-level tests. Map remains correctly out of scope (deliberate, documented deferral, not a gap). **SATISFIED**. |
 | AC3 | Partial move and sibling-access rules are deterministic | `runtime_ownership.md` overlap rules; decision record's Normative Invariants | Tuple/record overlap rules (`access_paths_overlap`) are one fixed, uniformly-applied function — proven deterministic by construction and by the full W2F E2E matrix. #1881 (nested two-level projection spuriously rejecting a sibling read) is **CLOSED** (PR #1882, merged 2026-09-03) — confirmed resolved, not a residual. ~~#1888 (`for`-range/`for`-each/`Stmt::Guard` lowering can silently skip `append_record_update_write_events_from_expr`, dropping a real Write event) remains **OPEN** and unrepaired — a genuine fail-open gap discovered during #1709's own audit and explicitly not fixed by PR #1887.~~ **Superseded 2026-09-06**: #1888's root cause is structurally eliminated by Checkpoint W2A (see addendum above and §5/§8) — RecordUpdate Write-event generation no longer depends on any prescan being invoked, confirmed empirically for all three named roots. | `tests/lexical_binding_identity_e2e.rs`, `tests/own0_root_identity_e2e.rs`, `tests/w15_record_update_makerecord_site_proof.rs`, `tests/fa_04_025_reconciliation.rs` (8/8, new), plus all Lane 2/#1891 suites | none remaining for this criterion | **SATISFIED** — the general rule is now proven deterministic everywhere it is actually invoked, including all three of #1888's originally-named roots. |
 | AC4 | Resource quotas and failure taxonomy are explicit | #1579 body itself; decision record's Resource/Failure Boundary section (explicitly scoped as separate from, but required alongside, ownership) | `max_steps`/`max_calls` (#1759): declared, never enforced. `trace_enabled`/`max_trace_entries` (#1760): declared, no consumer. `ConstPool` quota (#1761): declared, no VM resource behind it. `ExecutionContext`/quota decoupling (#1762): `ExecutionConfig` can carry a context label that disagrees with its own quota baseline; the VM never reads `config.context`. `RuntimeTrap` taxonomy (#1763): 8 documented variants, only 4 (`AssertionFailed`, `BorrowWriteConflict`, `ArithmeticOverflow`, `DivisionByZero`) are ever constructed. | None — zero enforcement code, zero fresh tests, since Position A was recorded | #1759, #1760, #1761, #1762, #1763 (all 5, zero closed) | **NOT SATISFIED** — no measurable progress on this criterion since SSF-08 began. |
-| AC5 | Verifier and runtime agree on admitted/rejected ownership states | `runtime_ownership.md` Verifier/VM Enforcement Contracts | Tuple/record/frame contour: exact agreement proven down to the instruction-PC level (Checkpoints D1–D3, W1–W2F) — the strongest evidence in this audit. Legacy SemCode: verifier still structurally admits pre-rev21 Write-bearing artifacts (decode/verify compatibility, Checkpoint W2E); runtime now deterministically rejects executing them (Checkpoint W2F) — a *documented*, intentional divergence between admission and execution, not a disagreement bug. ADT/Sequence: verifier and VM do agree operationally (both admit/process the same component kinds), but the admission itself is weaker (no SymbolId bounds check for ADT payload variants) than the tuple/record standard. ~~#1888 means a source-level write intent can occasionally have **no** Write event at all to check on either side.~~ **Superseded 2026-09-06**: confirmed no longer true — see AC3. | `checkpoint_w2e_legacy_pre_rev21_write_admitted_unchanged` (sm-verify), `legacy_pre_rev21_write_bearing_artifact_rejected_at_runtime` (sm-vm/tests), `tests/fa_04_025_reconciliation.rs`'s downstream-chain pair (real `BorrowWriteConflict` at a for-range-bound RecordUpdate site), full D-series and W-series suites | #1718 (weaker ADT admission) only | **PARTIALLY SATISFIED** — excellent for the primary (tuple/record) contour, including all three of #1888's former roots; weaker only at the ADT/Sequence admission edge, gated by #1718. |
+| AC5 | Verifier and runtime agree on admitted/rejected ownership states | `runtime_ownership.md` Verifier/VM Enforcement Contracts | Tuple/record/frame contour: exact agreement proven down to the instruction-PC level (Checkpoints D1–D3, W1–W2F) — the strongest evidence in this audit. Legacy SemCode: verifier still structurally admits pre-rev21 Write-bearing artifacts (decode/verify compatibility, Checkpoint W2E); runtime now deterministically rejects executing them (Checkpoint W2F) — a *documented*, intentional divergence between admission and execution, not a disagreement bug. ADT/Sequence: verifier and VM do agree operationally (both admit/process the same component kinds), but the admission itself is weaker (no SymbolId bounds check for ADT payload variants) than the tuple/record standard. ~~#1888 means a source-level write intent can occasionally have **no** Write event at all to check on either side.~~ **Superseded 2026-09-06**: confirmed no longer true — see AC3. | `checkpoint_w2e_legacy_pre_rev21_write_admitted_unchanged` (sm-verify), `legacy_pre_rev21_write_bearing_artifact_rejected_at_runtime` (sm-vm/tests), `tests/fa_04_025_reconciliation.rs`'s downstream-chain pair (real `BorrowWriteConflict` at a for-range-bound RecordUpdate site), full D-series and W-series suites | #1718 (weaker ADT admission) only | ~~**PARTIALLY SATISFIED** — excellent for the primary (tuple/record) contour, including all three of #1888's former roots; weaker only at the ADT/Sequence admission edge, gated by #1718.~~ **Superseded 2026-09-06 (addendum #3)**: #1718 merged - decoder, verifier, and runtime now agree uniformly on Sequence Borrow+Write and ADT Borrow admission and ADT Write rejection; mutation M4b's own finding (the verifier's independent check had no test that could catch its own removal) is closed by I4.1's direct, decode-independent test, confirming verifier and decoder are each *independently*, not merely coincidentally, in agreement. **SATISFIED**. |
 | AC6 | No documentation implies full Rust-like ownership unless qualified | Current-facing docs | Scanned `README.md`, `docs/LANGUAGE.md`, `docs/getting_started.md`, `docs/status/feature_maturity_matrix.md`, `docs/roadmap/public_maturity_snapshot.md`, `docs/roadmap/public_status_model.md`, `docs/roadmap/v1_readiness.md`, `docs/examples_index.md`, `docs/spec/*.md` for `rust-equivalent ownership`, `rust-like ownership`, `memory safety`, `lifetime inference`, `region inference`, `borrow checker`, `alias safety`. Every hit (`runtime_ownership.md`, `foundation_source_profile_v1.md`) is an explicit **denial**, never a claim. `docs/LANGUAGE.md`'s "borrows" hits are unrelated (design-inspiration language, not ownership). | Overclaim scan, this audit | none found | **SATISFIED**. |
 | AC7 | SSF-09 entry conditions are explicit | #1579's own Exit gate: "SSF-09 starts only when Semantic's public memory/ownership promise is precise, test-backed, and no stronger than the implementation"; `stable_foundation_dependency_map.md`'s serial gate and cross-phase dependency table | The procedural gate is explicit (`.harness/current.task.yaml`: `active_phase: SSF-08`; dependency map: `SSF-09 / #1580 ... Blocked by SSF-08`). The *substantive* condition is also explicit — it is stated directly in #1579's own Exit gate and is identical in substance to AC1. No separate, additional SSF-09-specific checklist exists beyond that, but none is needed: the cross-phase dependency table itself only lists SSF-10 through SSF-12 (not SSF-09) as consumers of the ownership *position* specifically — SSF-09's own inputs come from SSF-07, not SSF-08, substantively; SSF-08 only gates it procedurally. | none | none (the gate is explicit; whether it currently evaluates true depends on AC1, tracked separately) | **SATISFIED** — the entry condition is explicit; it is not yet *true*, but that is AC1's finding, not AC7's. |
 
@@ -283,7 +318,7 @@ this audit — there is no partial-credit reading available.
 |---|---|---|---|---|
 | #1656–#1664 | Lane 1 ScopeEnv cluster | CLOSED | ALREADY SATISFIED | Fresh GraphQL: all `COMPLETED`. |
 | #1709, #1724, #1725, #1726, #1891 | Lane 2 chain | CLOSED | ALREADY SATISFIED | Fresh GraphQL: all `COMPLETED`; final SHA is this audit's own baseline. |
-| #1718 | ADT/Sequence capability contour | OPEN | **REQUIRED** | Directly blocks AC1/AC2/AC5; contract decision now frozen and fully directional (Sequence Borrow+Write=PROMOTE; ADT Borrow=PROMOTE, ADT Write=RESTRICT/FAIL-CLOSED - see `ssf08_1718_path_family_contract_decision.md`), implementation not yet started. |
+| #1718 | ADT/Sequence capability contour | **CLOSED** (2026-09-06, PR #1896, `main` `b2fce6e2041661e3d08a3a196322f082a5f7c24f`) | **ALREADY SATISFIED** | Contract decision (Sequence Borrow+Write=PROMOTE; ADT Borrow=PROMOTE, ADT Write=RESTRICT/FAIL-CLOSED) fully implemented, qualified (6 mutation-testing falsification passes, hosted CI/security, exact-HEAD Codex review), merged, and closed. AC1/AC2/AC5 re-evaluated SATISFIED (§3 addendum #3). |
 | #1759, #1760, #1761, #1762, #1763 | Quota/failure taxonomy | OPEN (5/5) | **REQUIRED** | Directly and explicitly named by AC4; zero progress. |
 | #1888 | Lowering can skip Write-event emission for 3 statement roots | OPEN (GitHub state unchanged; recommend `CLOSE AS COMPLETED` — see reconciliation note) | **ALREADY SATISFIED BY LATER WORK** *(revised 2026-09-06, was REQUIRED)* | Checkpoint W2A relocated RecordUpdate Write-event generation into the universal `lower_expr_with_expected` entry point, structurally eliminating the prescan-omission root cause for all three named roots — confirmed by direct code reading and 8/8 new empirical tests (`tests/fa_04_025_reconciliation.rs`), including real downstream `BorrowWriteConflict` enforcement. |
 | #1778 | `AbiValue::Quad(u8)` unchecked at ABI boundary | OPEN | **INDEPENDENT** | Value-domain canonicality, not ownership; #1579's own decision record already so classifies it; practical consequence already mitigated by #1775. |
@@ -329,38 +364,38 @@ the 2026-09-06 #1888 reconciliation (originally three; #1888 is resolved).
 
 ## 10. Minimal residual DAG
 
-*(Revised 2026-09-06 — #1888 removed after reconciliation; see addendum.)*
+*(Revised 2026-09-06 — #1888 removed after reconciliation (see addendum);
+#1718 removed after implementation, merge, and re-evaluated AC1/AC2/AC5
+(see addendum #3).)*
 
-Evidence shows two genuinely independent tracks — not a chain. Neither
-track's own remedy touches the other's code paths, wire sections, or test
-suites:
+Exactly one residual track remains:
 
 ```
-#1718  (ADT/Sequence capability contract decision + implementation)         ─┐
-Lane 5 (#1759-#1763: quota enforcement + RuntimeTrap taxonomy completion)   ─┘   SSF-08 final
-                                                                                  acceptance
-                                                                                  reconciliation
-                                                                                       ↓
-                                                                                 close #1579
-                                                                                       ↓
-                                                                             activate SSF-09 #1580
+Lane 5 (#1759-#1763: quota enforcement + RuntimeTrap taxonomy completion)   ─┐
+                                                                              │   SSF-08 final
+                                                                              │   acceptance
+                                                                              │   reconciliation
+                                                                              ↓
+                                                                        close #1579
+                                                                              ↓
+                                                                  activate SSF-09 #1580
 ```
 
 `#1885` and `#1778` are real, open, but explicitly INDEPENDENT of this DAG —
 they may be picked up on their own track at any time without affecting
-SSF-08's own closure sequencing. `#1888` is no longer part of this DAG at
-all — see the 2026-09-06 addendum.
+SSF-08's own closure sequencing. `#1888` and `#1718` are no longer part of
+this DAG at all — see the 2026-09-06 addenda.
 
 ## 11. Verdict
 
-**READY TO CLOSE #1579: NO.**
+**READY TO CLOSE #1579: NO** — Lane 5 (#1759-#1763, AC4) remains entirely
+unstarted; every other acceptance criterion (AC1, AC2, AC3, AC5, AC6, AC7)
+is now SATISFIED as of the 2026-09-06 addenda.
 
-Exact next issue/checkpoint: not a single forced choice — #1718 and Lane 5
-(#1759–#1763) are mutually independent and may be worked in either order or
-in parallel. Relative sizing, for whoever picks the next GO: #1718 is a
-single bounded contract decision plus one implementation slice; Lane 5 is
-the larger remaining body of work (5 issues, entirely unstarted, spanning
-quota enforcement and trap-taxonomy completion across `sm-vm`).
+Exact next checkpoint: Lane 5 (#1759-#1763) is the sole remaining forced
+choice — the residual DAG no longer has an independent second track to pick
+between. Scope: quota enforcement (`max_steps`/`max_calls`/`ConstPool`/
+`trace_enabled`) and `RuntimeTrap` taxonomy completion (4 of 8 documented
+variants ever constructed) across `sm-vm`, entirely unstarted, 5 issues.
 
-This audit does not select one. Awaiting explicit GO naming the next
-checkpoint.
+Awaiting explicit GO to begin Lane 5.
