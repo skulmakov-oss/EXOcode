@@ -129,12 +129,18 @@ execution; Call = one admitted, non-root `push_frame` invocation (charged
 last, after signature/Frames/StackDepth/Registers admission, using the
 already-existing `vm.callstack.len() > 0` signal `push_frame` computes for
 its own Frames check to exempt the root/entry frame); exhaustion keeps the
-existing `used > limit` convention unchanged; failure channel is
-`RuntimeError::QuotaExceeded`, explicitly not `RuntimeTrap::QuotaExceeded`
-(that remains #1763's own, independent question - this decision does not
-resolve it). **This is a contract decision only. #1759 remains OPEN. No
-counter, no `enforce_quota` call site, and no test were added by this
-update - AC4.a remains not satisfied for `Steps`/`Calls` until a separately
+existing `used > limit` convention unchanged; overflow at the `usize::MAX`
+ceiling is fully frozen as a `checked_add`-based fail-closed rule with
+saturated-`usize::MAX` reporting on the single unrepresentable case, no new
+error channel; failure channel is `RuntimeError::QuotaExceeded`, explicitly
+not `RuntimeTrap::QuotaExceeded` (that remains #1763's own, independent
+question - this decision does not resolve it). This same pass also
+surfaced a new residual finding outside #1759's own scope - `EffectCalls`
+shares the pre-existing unchecked-overflow defect this decision closes for
+`Steps`/`Calls` - recorded in §8, finding 4. **This is a contract decision
+only. #1759 remains OPEN. No counter, no `enforce_quota` call site, and no
+test were added by this update - AC4.a remains not satisfied for `Steps`/
+`Calls` until a separately
 authorized implementation checkpoint lands.**
 
 ## 4. #1760 — `trace_enabled` / `max_trace_entries`
@@ -465,9 +471,28 @@ the five filed issues rather than silently expanding implementation scope:
    is not a safety gap (the quota genuinely is enforced, just not by the
    crate the spec names), but it is a documentation-precision gap worth
    fixing alongside whatever else touches `quotas.md`.
+4. **`EffectCalls` — an already-ACTIVE, already-enforced runtime quota — uses
+   unchecked `vm.effect_calls + 1` in `bump_effect_calls`, which wraps
+   silently (rather than erroring) in a release build if the counter is ever
+   driven near `usize::MAX`.** Discovered during the #1759 Steps/Calls
+   contract-decision pass while auditing overflow discipline for the two new
+   counters (see
+   `docs/roadmap/stable_foundation/ssf08_1759_steps_calls_contract_decision.md`
+   §10.1) - not discovered by, and not part of, this document's own original
+   fresh-check pass. **Classification: FAIL-OPEN EDGE / QUALIFICATION GAP.**
+   **AC impact: AC4.a** - an active, enforced quota's counter is not
+   qualified to be fail-closed at its own numeric ceiling, which the #1759
+   decision now requires of `Steps`/`Calls` but does not itself apply to
+   `EffectCalls`. **This is not `#1760`** (`#1760` is `TraceEntries`/
+   `trace_enabled`) **and is not repaired by `#1759`** (`Steps`/`Calls` are
+   new counters; `EffectCalls` is a separate, pre-existing one) - `#1759`'s
+   implementation scope is explicitly not expanded to fix it. **Tracking
+   issue: not yet allocated** - whether this warrants its own filed issue is
+   a separate decision to make after the #1759 contract PR lands, not one
+   made by this audit.
 
-Neither of these three is added to Lane 5's implementation scope by this
-audit. They are recorded for a future, explicitly-scoped decision, per the
+None of these four is added to Lane 5's implementation scope by this audit.
+They are recorded for a future, explicitly-scoped decision, per the
 governing brief's own instruction not to silently expand scope.
 
 ## 9. Cross-issue interaction audit
@@ -531,7 +556,7 @@ specifically and only on `#1759`, as stated in §6.
 | `Frames` | `max_frames` | 256/256/256 | Call-stack frame count | `sm-vm` (`push_frame`) | frame push | `RuntimeError::QuotaExceeded` | yes | yes (existing suite) | `quotas.md` | **ACTIVE** |
 | `StackDepth` | `max_stack_depth` | 256/256/256 | Effective stack depth | `sm-vm` (`push_frame`) | frame push | `RuntimeError::StackOverflow` (compat: surfaced as `StackOverflow`, not `QuotaExceeded`, per `quotas.md`'s own documented compatibility note) | yes | yes (existing suite) | `quotas.md` | **ACTIVE** |
 | `Registers` | `max_registers` | 4096/4096/8192 | Register vector growth | `sm-vm` (frame init + growth) | register write | `RuntimeError::QuotaExceeded` | yes | yes (existing suite) | `quotas.md` | **ACTIVE** |
-| `EffectCalls` | `max_effect_calls` | 1024/0/4096 | Effect-opcode invocation count | `sm-vm` (`bump_effect_calls`) | effect opcode dispatch | `RuntimeError::QuotaExceeded` | yes | yes (existing suite) | `quotas.md` | **ACTIVE** |
+| `EffectCalls` | `max_effect_calls` | 1024/0/4096 | Effect-opcode invocation count | `sm-vm` (`bump_effect_calls`) | effect opcode dispatch | `RuntimeError::QuotaExceeded` | yes | yes (existing suite) | `quotas.md` | **ACTIVE, numeric-ceiling overflow discipline not yet qualified** (§8 finding 4) |
 | `SymbolTable` | `max_symbol_table` | 16384 (all profiles) | Program-wide unique runtime symbol count | **`sm-verify`** (not `sm-vm` - see §12) | pre-execution, at admission | verifier `RejectReport` | yes | yes (#1820 suite) | `quotas.md` (ownership line inaccurate, §8) | **ACTIVE, wrong layer documented** |
 | `Steps` | `max_steps` | 100000/100000/250000 | *none* | *none* | *none* | *none* | no | no | `quotas.md` | **INERT** (#1759) |
 | `Calls` | `max_calls` | 16384/16384/32768 | *none* | *none* | *none* | *none* | no | no | `quotas.md` | **INERT** (#1759) |
