@@ -100,6 +100,8 @@ statically.
 
 Current enforced areas include:
 
+- opcode-dispatch count (`Steps`)
+- admitted non-root call count (`Calls`)
 - frame count
 - effective stack depth
 - register growth
@@ -112,6 +114,15 @@ Current compatibility note:
 - stack-depth quota overflow is still surfaced to callers as `StackOverflow` on
   the VM path
 - the stack limit is nonetheless governed by the shared runtime quota contract
+
+`Steps`/`Calls` semantics (charge point, root-frame exemption, exhaustion
+timing, and `usize::MAX` overflow discipline) are frozen in
+`docs/roadmap/stable_foundation/ssf08_1759_steps_calls_contract_decision.md`.
+Their counter increments use a `checked_add`-based primitive that fails
+closed at the `usize::MAX` ceiling (saturated `used` reporting only, never a
+silent wrap) - `EffectCalls`' own increment does not yet follow this same
+discipline (tracked separately, `docs/roadmap/stable_foundation/ssf08_lane5_resource_failure_closure_audit.md`
+§8 finding 4).
 
 ## Determinism Rule
 
