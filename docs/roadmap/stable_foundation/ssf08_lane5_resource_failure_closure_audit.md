@@ -507,6 +507,20 @@ the five filed issues rather than silently expanding implementation scope:
    new counters; `EffectCalls` is a separate, pre-existing one) - `#1759`'s
    implementation scope is explicitly not expanded to fix it. **Tracking
    issue: #1900 (FA-08-011)**, filed after the contract PR landed.
+   **Partially repaired in this checkpoint** - the free-function
+   `bump_effect_calls(vm: &mut VM)` site (Gate/Pulse/State/Event/Clock
+   opcodes) now reuses the shared `charge_counter` primitive #1759 landed
+   (generalized beyond `Steps`/`Calls` to cover all three execution
+   counters), fails closed at the `usize::MAX` ceiling with saturated-`used`
+   reporting only, and was verified by release-mode mutation proofs (a
+   restored bare `+ 1` wraps silently in `--release` and fails the ceiling
+   test; a `saturating_add` substitute lets the ceiling case through as
+   `Ok`, masking exhaustion). Call-site ordering relative to capability
+   checks and host dispatch is unchanged. A second, independent site,
+   `ApplicationVmHost::bump_effect_calls`, was found during this same
+   checkpoint to share the identical defect and remains unrepaired - see
+   §8 finding 6. This does not satisfy AC4.a for `EffectCalls`, nor AC4
+   globally - see §12.
 5. **`examples/benchmarks/snake_learning.sm` exceeds the already-published
    `VerifiedLocal` `max_steps = 100000` baseline by exactly one opcode
    (`QuotaExceeded { kind: Steps, limit: 100000, used: 100001 }`).**
@@ -529,8 +543,30 @@ the five filed issues rather than silently expanding implementation scope:
    silently patched. **Tracking issue: #1902 (FA-08-012)** - independent of
    #1759, so the ignore annotation does not cite an issue that will itself
    close once #1759's implementation lands.
+6. **`EffectCalls` has two architecturally independent enforcement sites,
+   and #1900 repaired only one of them.** `bump_effect_calls(vm: &mut VM)`
+   (the free function, called from `Opcode::GateRead`/`GateWrite`/
+   `PulseEmit`/`StateQuery`/`StateUpdate`/`EventPost`/`ClockRead` - the
+   PROMETHEUS/Gate-opcode host boundary) is now fail-closed via the shared
+   `charge_counter` primitive. `ApplicationVmHost::bump_effect_calls(&mut
+   self)` (a separate `effect_calls: usize` field on a separate host-bridge
+   type, called from the `args_read`/`fs_read_text`/`fs_write_text`/etc.
+   application-builtin boundary and exercised by
+   `tests/ssf04_effect_quota.rs`) still contains the identical unchecked
+   `let next = self.effect_calls + 1;`. #1900's own issue text and the
+   checkpoint that repaired it named only the free-function signature
+   verbatim, so this sibling was correctly left untouched rather than
+   fixed as an unauthorized scope expansion - but it means `EffectCalls` as
+   a whole quota kind is not yet uniformly fail-closed: one of its two real
+   charge sites still wraps silently in release builds under the same
+   `usize::MAX`-proximity condition #1900 exists to close. **Classification:
+   SIBLING FAIL-OPEN EDGE, DISCOVERED DURING #1900's OWN IMPLEMENTATION.**
+   **AC impact: AC4.a** - the criterion cannot be marked satisfied for
+   `EffectCalls` until this second site is repaired too. **Tracking issue:
+   not yet allocated** - a decision for after this checkpoint, not one this
+   checkpoint is authorized to make.
 
-None of these five is added to Lane 5's implementation scope by this audit.
+None of these six is added to Lane 5's implementation scope by this audit.
 They are recorded for a future, explicitly-scoped decision, per the
 governing brief's own instruction not to silently expand scope.
 
@@ -595,7 +631,7 @@ specifically and only on `#1759`, as stated in §6.
 | `Frames` | `max_frames` | 256/256/256 | Call-stack frame count | `sm-vm` (`push_frame`) | frame push | `RuntimeError::QuotaExceeded` | yes | yes (existing suite) | `quotas.md` | **ACTIVE** |
 | `StackDepth` | `max_stack_depth` | 256/256/256 | Effective stack depth | `sm-vm` (`push_frame`) | frame push | `RuntimeError::StackOverflow` (compat: surfaced as `StackOverflow`, not `QuotaExceeded`, per `quotas.md`'s own documented compatibility note) | yes | yes (existing suite) | `quotas.md` | **ACTIVE** |
 | `Registers` | `max_registers` | 4096/4096/8192 | Register vector growth | `sm-vm` (frame init + growth) | register write | `RuntimeError::QuotaExceeded` | yes | yes (existing suite) | `quotas.md` | **ACTIVE** |
-| `EffectCalls` | `max_effect_calls` | 1024/0/4096 | Effect-opcode invocation count | `sm-vm` (`bump_effect_calls`) | effect opcode dispatch | `RuntimeError::QuotaExceeded` | yes | yes (existing suite) | `quotas.md` | **ACTIVE, numeric-ceiling overflow discipline not yet qualified** (§8 finding 4) |
+| `EffectCalls` | `max_effect_calls` | 1024/0/4096 | Effect-opcode invocation count | `sm-vm`, two independent sites: `bump_effect_calls(vm)` (Gate/Pulse/State/Event/Clock) and `ApplicationVmHost::bump_effect_calls` (application builtins) | effect opcode / builtin dispatch | `RuntimeError::QuotaExceeded` | yes | yes (existing suite + #1900 numeric-ceiling suite) | `quotas.md` | **ACTIVE; free-function site numeric-ceiling fail-closed and qualified (#1900); `ApplicationVmHost` site still unchecked** (§8 findings 4 and 6) |
 | `SymbolTable` | `max_symbol_table` | 16384 (all profiles) | Program-wide unique runtime symbol count | **`sm-verify`** (not `sm-vm` - see §12) | pre-execution, at admission | verifier `RejectReport` | yes | yes (#1820 suite) | `quotas.md` (ownership line inaccurate, §8) | **ACTIVE, wrong layer documented** |
 | `Steps` | `max_steps` | 100000/100000/250000 | Opcode-dispatch fuel counter | `sm-vm` (`exec_loop_with_profile`) | opcode decode succeeds | `RuntimeError::QuotaExceeded` | yes | yes (incl. backward-loop regression) | `quotas.md`, `vm.md` | **ACTIVE** (#1759, implemented, checked-add overflow discipline) |
 | `Calls` | `max_calls` | 16384/16384/32768 | Admitted non-root Semantic invocation count | `sm-vm` (`push_frame`) | frame push, root-exempt | `RuntimeError::QuotaExceeded` | yes | yes (incl. root-exemption + boundary suite) | `quotas.md`, `vm.md` | **ACTIVE** (#1759, implemented, checked-add overflow discipline) |
@@ -652,8 +688,10 @@ target contract for over-strengthening:
   authoritative resource, charge point, deterministic exhaustion behavior,
   and test. *(Satisfied for `Frames`/`StackDepth`/`Registers`/`SymbolTable`
   and, as of #1759's implementation, `Steps`/`Calls`; not satisfied for
-  `EffectCalls`, whose counter increment is not yet fail-closed at its own
-  numeric ceiling - §8 finding 4 / #1900.)*
+  `EffectCalls` - #1900 made its `bump_effect_calls(vm)` (Gate-opcode) site
+  fail-closed at the numeric ceiling, but its second, architecturally
+  independent site, `ApplicationVmHost::bump_effect_calls`, still uses the
+  identical unchecked increment - §8 findings 4 and 6.)*
 - **AC4.b** — Inert/deferred resource concepts are not presented as
   enforced runtime quotas. *(Not satisfied: `ConstPool` and, pending a
   decision, `TraceEntries` are presented as enforced quota kinds in

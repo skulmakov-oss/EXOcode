@@ -3229,14 +3229,18 @@ fn enforce_quota(quotas: &RuntimeQuotas, kind: QuotaKind, used: usize) -> Result
     Ok(())
 }
 
-/// #1759: shared charge primitive for the `Steps`/`Calls` execution-wide
-/// counters, per `ssf08_1759_steps_calls_contract_decision.md` §10 - the
-/// only place either counter is incremented. Overflow-safe by construction:
-/// `used.checked_add(1)` never wraps. When the increment itself would
-/// overflow (`used` was already `usize::MAX`), this fails closed with the
-/// same `RuntimeError::QuotaExceeded` channel, reporting `used: usize::MAX`
-/// as SATURATED REPORTING for that one unrepresentable attempted-usage case
-/// only - never a silent wraparound, never a new error channel.
+/// Shared execution-counter charging primitive (originally #1759, now also
+/// #1900): the one place any of `sm-vm`'s execution-wide quota counters is
+/// incremented. Overflow-safe by construction: `used.checked_add(1)` never
+/// wraps. When the increment itself would overflow (`used` was already
+/// `usize::MAX`), this fails closed with the same `RuntimeError::
+/// QuotaExceeded` channel, reporting `used: usize::MAX` as SATURATED
+/// REPORTING for that one unrepresentable attempted-usage case only - never
+/// a silent wraparound, never a new error channel.
+///
+/// Currently used by: `Steps`, `Calls` (#1759), `EffectCalls` (#1900).
+/// VM execution mechanics, not public quota vocabulary - stays private here
+/// rather than moving to `sm-runtime-core`.
 fn charge_counter(used: usize, limit: usize, kind: QuotaKind) -> Result<usize, RuntimeError> {
     match used.checked_add(1) {
         Some(next) if next > limit => Err(RuntimeError::QuotaExceeded(QuotaExceeded {
@@ -3253,10 +3257,14 @@ fn charge_counter(used: usize, limit: usize, kind: QuotaKind) -> Result<usize, R
     }
 }
 
+/// #1900 (FA-08-011): reuses the shared `charge_counter` primitive instead
+/// of an unchecked `vm.effect_calls + 1`, which wrapped silently in release
+/// builds once the counter neared `usize::MAX`. Call sites, ordering
+/// relative to capability checks, and host dispatch are unchanged - this
+/// only replaces how the counter itself is incremented.
 fn bump_effect_calls(vm: &mut VM) -> Result<(), RuntimeError> {
-    let next = vm.effect_calls + 1;
-    enforce_quota(&vm.config.quotas, QuotaKind::EffectCalls, next)?;
-    vm.effect_calls = next;
+    let limit = vm.config.quotas.max_effect_calls;
+    vm.effect_calls = charge_counter(vm.effect_calls, limit, QuotaKind::EffectCalls)?;
     Ok(())
 }
 
@@ -6772,6 +6780,27 @@ mod tests {
         host: &mut H,
         capabilities: &C,
     ) -> (VM, Result<Value, RuntimeError>) {
+        run_prometheus_program_with_config_returning_vm(
+            instrs,
+            host,
+            capabilities,
+            ExecutionConfig::for_context(ExecutionContext::KernelBound),
+        )
+    }
+
+    /// Same as `run_prometheus_program_returning_vm`, but with an explicit
+    /// `ExecutionConfig` - needed by #1900's own EffectCalls-exhaustion test,
+    /// which requires a `max_effect_calls` tighter than `KernelBound`'s
+    /// default.
+    fn run_prometheus_program_with_config_returning_vm<
+        H: PrometheusHostAbi,
+        C: CapabilityChecker,
+    >(
+        instrs: Vec<IrInstr>,
+        host: &mut H,
+        capabilities: &C,
+        config: ExecutionConfig,
+    ) -> (VM, Result<Value, RuntimeError>) {
         let bytes = emit_ir_to_semcode(
             &[IrFunction {
                 name: "main".to_string(),
@@ -6782,7 +6811,6 @@ mod tests {
             false,
         )
         .expect("emit test program");
-        let config = ExecutionConfig::for_context(ExecutionContext::KernelBound);
         let token = verify_semcode_token_with_quotas(&bytes, config.quotas)
             .expect("test program must admit");
         let entry_token = token.require_entry("main").expect("main entry");
@@ -6821,6 +6849,129 @@ mod tests {
         assert_eq!(
             vm.calls, 0,
             "an effect opcode must not consume the Calls quota"
+        );
+    }
+
+    // --- #1900 (FA-08-011) EffectCalls numeric-ceiling fail-closed repair --
+    //
+    // `bump_effect_calls` is a private free function in this module, so
+    // these call it directly against a minimally constructed `VM` rather
+    // than driving a full compiled program - the same "test the extracted
+    // policy function directly" pattern already used for `charge_counter`
+    // itself. `tests/ssf04_effect_quota.rs`'s existing ordinary-case
+    // coverage (exact boundary, limit=0, capability-denied non-charge,
+    // quota-blocks-host) exercises `ApplicationVmHost::bump_effect_calls` -
+    // an architecturally separate counter for the application-host trust
+    // boundary, not this one. It stays green because this repair does not
+    // touch it, but it is not itself evidence for the function repaired
+    // here; the direct tests below are.
+
+    fn vm_for_effect_calls_test(effect_calls: usize, max_effect_calls: usize) -> VM {
+        let mut config = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
+        config.quotas.max_effect_calls = max_effect_calls;
+        VM {
+            functions: HashMap::new(),
+            callstack: Vec::new(),
+            config,
+            effect_calls,
+            steps: 0,
+            calls: 0,
+            symbols: RuntimeSymbolTable::new(),
+            prng_state: 0,
+        }
+    }
+
+    #[test]
+    fn bump_effect_calls_admits_under_limit() {
+        let mut vm = vm_for_effect_calls_test(2, 4);
+        bump_effect_calls(&mut vm).expect("must admit");
+        assert_eq!(vm.effect_calls, 3);
+    }
+
+    #[test]
+    fn bump_effect_calls_rejects_at_zero_limit() {
+        let mut vm = vm_for_effect_calls_test(0, 0);
+        let err = bump_effect_calls(&mut vm).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::QuotaExceeded(QuotaExceeded {
+                kind: QuotaKind::EffectCalls,
+                limit: 0,
+                used: 1,
+            })
+        );
+        assert_eq!(vm.effect_calls, 0, "the rejected charge must not persist");
+    }
+
+    /// The #1900 edge itself: `effect_calls` already at `usize::MAX` with a
+    /// `usize::MAX` limit too, so the ordinary `next > limit` comparison
+    /// could never fire even in principle - only `checked_add` failing
+    /// closed on the increment itself catches this.
+    #[test]
+    fn bump_effect_calls_fails_closed_at_usize_max_with_usize_max_limit() {
+        let mut vm = vm_for_effect_calls_test(usize::MAX, usize::MAX);
+        let err = bump_effect_calls(&mut vm).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::QuotaExceeded(QuotaExceeded {
+                kind: QuotaKind::EffectCalls,
+                limit: usize::MAX,
+                used: usize::MAX,
+            })
+        );
+        assert_eq!(
+            vm.effect_calls,
+            usize::MAX,
+            "the counter must remain at usize::MAX, never wrap to 0"
+        );
+    }
+
+    /// Same ceiling case with a small, distinct configured limit - proves
+    /// saturation applies only to the unrepresentable *attempted usage*
+    /// (`used`), never to the caller's real configured `limit`.
+    #[test]
+    fn bump_effect_calls_fails_closed_at_usize_max_with_distinct_limit() {
+        let mut vm = vm_for_effect_calls_test(usize::MAX, 5);
+        let err = bump_effect_calls(&mut vm).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::QuotaExceeded(QuotaExceeded {
+                kind: QuotaKind::EffectCalls,
+                limit: 5,
+                used: usize::MAX,
+            })
+        );
+        assert_eq!(vm.effect_calls, usize::MAX);
+    }
+
+    /// End-to-end proof that an exhausted EffectCalls quota still blocks the
+    /// real `GateRead` opcode's host dispatch itself (unchanged call-site
+    /// ordering - #1900 only repairs the counter's own arithmetic, not when
+    /// it is charged relative to the host call).
+    #[test]
+    fn gate_read_blocked_by_effect_calls_quota_never_reaches_host() {
+        let mut host = prom_abi::RecordingHostAbi::with_read_value(AbiValue::Quad(1));
+        let capabilities = gate_read_capabilities();
+        let mut config = ExecutionConfig::for_context(ExecutionContext::KernelBound);
+        config.quotas.max_effect_calls = 0;
+        let (vm, result) = run_prometheus_program_with_config_returning_vm(
+            gate_read_into_return_program(),
+            &mut host,
+            &capabilities,
+            config,
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            RuntimeError::QuotaExceeded(QuotaExceeded {
+                kind: QuotaKind::EffectCalls,
+                limit: 0,
+                used: 1,
+            })
+        );
+        assert_eq!(vm.effect_calls, 0, "the rejected charge must not persist");
+        assert!(
+            host.reads.is_empty(),
+            "the host must never be called once the quota rejects the charge"
         );
     }
 

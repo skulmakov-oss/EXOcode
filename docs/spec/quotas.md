@@ -118,11 +118,12 @@ Current compatibility note:
 `Steps`/`Calls` semantics (charge point, root-frame exemption, exhaustion
 timing, and `usize::MAX` overflow discipline) are frozen in
 `docs/roadmap/stable_foundation/ssf08_1759_steps_calls_contract_decision.md`.
-Their counter increments use a `checked_add`-based primitive that fails
-closed at the `usize::MAX` ceiling (saturated `used` reporting only, never a
-silent wrap) - `EffectCalls`' own increment does not yet follow this same
-discipline (tracked separately, `docs/roadmap/stable_foundation/ssf08_lane5_resource_failure_closure_audit.md`
-§8 finding 4).
+`Steps` / `Calls` / `EffectCalls` execution counters use overflow-safe
+fail-closed charging (a shared `checked_add`-based primitive): ordinary
+usage reports the exact attempted value, and the single unrepresentable
+case (the increment itself would overflow `usize::MAX`) fails closed with
+`used` SATURATED at `usize::MAX` for reporting only - never a silent wrap,
+never continued execution.
 
 ## Determinism Rule
 
