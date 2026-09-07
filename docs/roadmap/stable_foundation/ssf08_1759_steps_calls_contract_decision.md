@@ -319,38 +319,100 @@ Both are direct applications of the already-frozen general rules, not
 additional policy - this is the conceptual-consistency check item 10 asks
 for, and it passes: no new mechanism is invoked for the boundary value 0.
 
-## 10. Counter overflow / `usize::MAX` audit
+## 10. Counter overflow / `usize::MAX` — fully frozen
 
-**Finding (in-scope contract rule, not deferred):** `RuntimeQuotas::exceed`
-itself (`(used > limit).then_some(...)`) never overflows - it only compares
-two already-computed `usize` values. The risk lives entirely in how a
-*caller* computes the incremented `used` value before passing it in - the
-existing precedent, `bump_effect_calls`'s `let next = vm.effect_calls + 1;`,
-uses a bare `+`, which **wraps silently in a release build** (Rust's
-default, non-panicking release behavior for integer overflow) rather than
-erroring. A custom `ExecutionConfig` supplying `max_steps = usize::MAX` (or
-any caller-controlled quota field near that ceiling) combined with a
-sufficiently long-running program would eventually drive the counter's own
-`+ 1` increment past `usize::MAX`, wrapping to `0` - at which point `next
-(0) > limit (usize::MAX)` is false, and the quota silently stops
-functioning as fuel, defeating the entire bounded-termination guarantee
-this checkpoint exists to establish. This is a real, currently-latent
-pattern already present for `EffectCalls` today, not a new concern this
-decision invents, but #1759 must not repeat it for Steps/Calls given that
-Steps is specifically the bounded-*termination* promise.
+**Finding:** `RuntimeQuotas::exceed` itself (`(used > limit).then_some(...)`)
+never overflows - it only compares two already-computed `usize` values. The
+risk lives entirely in how a *caller* computes the incremented `used` value
+before passing it in - the existing precedent, `bump_effect_calls`'s
+`let next = vm.effect_calls + 1;`, uses a bare `+`, which **wraps silently
+in a release build** (Rust's default, non-panicking release behavior for
+integer overflow) rather than erroring. §10.1 records why this same pattern
+is not acceptable for `EffectCalls` either, as a newly discovered residual
+(tracked in the Lane 5 audit, not fixed here). This section freezes the
+Steps/Calls charge primitive so the same defect cannot be reintroduced.
 
-**Frozen rule for the implementation checkpoint (not implemented here):**
-Steps/Calls counters must increment via `checked_add` (or equivalent),
-returning a deterministic error if the increment itself would overflow -
-never a silent wraparound, and never a `wrapping_add`. This mirrors the
-exact discipline `docs/spec/semcode.md`'s own "Offset Arithmetic Must Stay
-Inside The Result Model" section already mandates for decode-time
-cursor/length arithmetic, generalized to runtime counters for the identical
-reason: an attacker- or misconfiguration-controlled value must never be
-able to wrap a safety-relevant counter back into an apparently-valid range.
-This audit does not extend the same requirement to the pre-existing
-`EffectCalls` counter's own `+ 1` - that is a `#1760`-or-later-adjacent
-finding outside #1759's own scope, recorded here for visibility only.
+**Why "return a deterministic error on overflow" alone was insufficient
+(the gap closed by this revision):** the failure channel is already frozen
+(§11) as `RuntimeError::QuotaExceeded { kind, limit, used }` with
+`used: usize`. At `limit = usize::MAX`, the *ordinary* rejection case
+(`used = limit + 1`) is itself unrepresentable as a `usize` - three already-
+frozen constraints (exact `used = N+1` reporting, `usize` representation,
+no new failure channel) cannot all hold simultaneously at this single
+numeric ceiling. This is now resolved, not left to the implementation
+checkpoint's discretion.
+
+**Frozen charge primitive (both Steps and Calls, identical shape):**
+
+```
+next = used.checked_add(1)
+
+match next {
+    Some(next) => {
+        // ordinary path - existing RuntimeQuotas::exceed / used > limit
+        // convention, completely unchanged by this decision
+        if next > limit {
+            reject before this instruction/call semantically executes:
+                RuntimeError::QuotaExceeded { kind, limit, used: next }
+        } else {
+            used = next; proceed
+        }
+    }
+    None => {
+        // used was already usize::MAX; the attempted usage
+        // (usize::MAX + 1) is not representable as a usize at all
+        reject before this instruction/call semantically executes:
+            RuntimeError::QuotaExceeded { kind, limit, used: usize::MAX }
+    }
+}
+```
+
+**Normative statement (frozen):**
+- `QuotaExceeded.used` is the *exact* attempted usage whenever that value is
+  representable as a `usize`.
+- At the single numeric-ceiling case where the attempted usage would be
+  `usize::MAX + 1`, the externally reported `used` value **saturates** at
+  `usize::MAX`. This saturation is reporting-only - it is not a new charge
+  semantic, not a rounding rule for any other value, and applies to no
+  other point in this contract.
+- This case is unconditionally **fail-closed**: no wrap, no warning, no
+  continued execution. The instruction/call that triggered it does not run.
+- No `RuntimeTrap::QuotaExceeded` involvement - the channel stays
+  `RuntimeError::QuotaExceeded` exactly as §11 already freezes, with no new
+  `RuntimeError`/`RuntimeTrap` variant introduced for this edge case.
+- This closes the overflow question independently of whether `limit` itself
+  is ever actually configured near `usize::MAX` in a shipped profile
+  (`verified_local`/`pure_compute`/`kernel_bound` are not) - the rule exists
+  because `ExecutionConfig`/`RuntimeQuotas` construction is not restricted
+  to those three baselines (`ExecutionConfig::new` performs no
+  cross-validation, per the existing `sm-runtime-core` inspection), so a
+  caller-supplied near-ceiling limit is a real, not merely theoretical,
+  input.
+
+**Future regression test design (specified, not implemented):** must not
+execute `usize::MAX` instructions/calls to exercise this path. Instead, the
+implementation checkpoint must expose the charge primitive above as a small
+internal helper (e.g. `fn charge(used: usize, limit: usize) -> Result<usize, QuotaExceeded>`)
+directly unit-testable by constructing `used = usize::MAX` as a starting
+value and asserting the `None`/saturated-`usize::MAX` branch fires - the
+same "test the extracted policy function directly, do not rely on driving
+the real engine to the boundary" pattern already used for the #1718
+checkpoint's `verify_ownership_path_family_contract` extraction.
+
+### 10.1 New residual finding surfaced by this audit — `EffectCalls` overflow discipline
+
+This decision's own re-inspection of `bump_effect_calls` found that
+`EffectCalls` - an already-**ACTIVE**, already-enforced, already-qualified
+runtime quota per the Lane 5 inventory (§10 there) - uses the identical
+unchecked `vm.effect_calls + 1` pattern this section rejects for Steps/
+Calls. This is **not** a #1760 finding (#1760 is `TraceEntries`/
+`trace_enabled`) and is **not** repaired by #1759 (Steps/Calls are new
+counters; `EffectCalls` is a pre-existing, separate one). It is recorded
+here because it was discovered during this pass, and propagated into the
+Lane 5 audit doc (§8 there) as its own residual finding so it is not lost
+inside a #1759-scoped document. **#1759's implementation scope is NOT
+expanded to include fixing `EffectCalls`** - that remains a separate,
+not-yet-triaged item.
 
 ## 11. Failure taxonomy boundary
 
@@ -414,6 +476,7 @@ newly-invented signal instead of the one already justified here.
 | Call charge order | before Frames/StackDepth/Registers | counts invocations that never actually produced a frame (§6) |
 | Call charge order | as a derived count from Step-charged `CALL` opcodes | conflates builtin-resolved `CALL`s (no real invocation) with real ones (§5) |
 | Counter overflow | silent wraparound (bare `+`, matching existing `EffectCalls` precedent) | defeats the bounded-termination guarantee itself for a caller-controlled near-`usize::MAX` limit (§10) |
+| Counter overflow reporting | inventing a new error variant / new failure channel for the `usize::MAX` ceiling case | unnecessary - exact `used=N+1` reporting, `usize` representation, and the existing `RuntimeError::QuotaExceeded` channel can all be kept by saturating the reported `used` at `usize::MAX` for this one unrepresentable case only (§10) |
 | Failure channel | `RuntimeTrap::QuotaExceeded` | pre-empts `#1763`'s own, later, independent taxonomy decision (§11) |
 
 ## 15. Effect on Lane 5 / AC4
@@ -423,8 +486,16 @@ implemented. AC4.a is **NOT SATISFIED**: no counter exists yet, so "every
 quota advertised as an active runtime bound has an authoritative resource"
 still fails for `Steps`/`Calls`. The next checkpoint is implementation,
 gated on a separate, explicit GO, covering: the two counters on `VM`, the
-charge points and root-exemption test frozen in §2-§9, `checked_add`
-overflow discipline per §10, the `RuntimeError::QuotaExceeded` channel per
-§11, and the reproduction matrix in §12 as permanent regression tests.
+charge points and root-exemption test frozen in §2-§9, the fully-frozen
+`checked_add`/saturated-reporting overflow discipline per §10, the
+`RuntimeError::QuotaExceeded` channel per §11, and the reproduction matrix
+in §12 (plus the §10 helper-level ceiling test) as permanent regression
+tests.
+
+This pass also surfaced one residual finding **outside** #1759's own scope:
+`EffectCalls` - an already-active, already-enforced quota - shares the same
+unchecked `+ 1` defect this section closes for Steps/Calls (§10.1). It is
+recorded in the Lane 5 audit doc as its own finding, not folded into
+#1759's implementation scope, and not yet assigned a tracking issue.
 
 **Wait for explicit GO before implementation.**
