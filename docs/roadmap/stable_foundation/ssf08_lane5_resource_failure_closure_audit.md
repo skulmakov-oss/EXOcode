@@ -526,7 +526,9 @@ the five filed issues rather than silently expanding implementation scope:
    separate decision outside #1759's narrow contract-implementation scope.
    Per explicit user decision, `snake_learning_passes_check_run_compile_verify`
    is left `#[ignore]`d with a citation back to this finding rather than
-   silently patched. **Tracking issue: not yet allocated.**
+   silently patched. **Tracking issue: #1902 (FA-08-012)** - independent of
+   #1759, so the ignore annotation does not cite an issue that will itself
+   close once #1759's implementation lands.
 
 None of these five is added to Lane 5's implementation scope by this audit.
 They are recorded for a future, explicitly-scoped decision, per the

@@ -3069,6 +3069,22 @@ fn push_frame(
     }
     let initial_reg_count = 16usize.max(args.len());
     enforce_quota(&vm.config.quotas, QuotaKind::Registers, initial_reg_count)?;
+    // #1759: the sole Calls choke point. `push_frame` is the single,
+    // universal frame-construction path (root/entry and every nested
+    // Opcode::Call/ClosureCall invocation alike), so the root exemption
+    // uses the same structural signal already used above for the Frames
+    // quota: the callstack was empty before this push only for the very
+    // first (root/entry) frame of an execution. Charged immediately after
+    // Frames/StackDepth/Registers admit this invocation and strictly before
+    // any frame state (registers, ownership-borrow setup, the `Frame`
+    // itself) is materialized - not merely before the eventual
+    // `vm.callstack.push`, per the exact admission order frozen in
+    // ssf08_1759_steps_calls_contract_decision.md §4 and §6: "construct
+    // frame, push" is one combined final step that comes entirely after
+    // the Calls charge, not interleaved with it.
+    if !vm.callstack.is_empty() {
+        vm.calls = charge_counter(vm.calls, vm.config.quotas.max_calls, QuotaKind::Calls)?;
+    }
     let mut regs = vec![RegisterSlot::Uninitialized; initial_reg_count];
     for (i, v) in args.into_iter().enumerate() {
         regs[i] = RegisterSlot::Value(v);
@@ -3103,19 +3119,6 @@ fn push_frame(
         func: f.name.clone(),
         return_dst,
     };
-    // #1759: the sole Calls choke point. `push_frame` is the single,
-    // universal frame-construction path (root/entry and every nested
-    // Opcode::Call/ClosureCall invocation alike), so the root exemption
-    // uses the same structural signal already computed above for the
-    // Frames quota: the callstack was empty before this push only for the
-    // very first (root/entry) frame of an execution. Charged last, after
-    // signature validation and the Frames/StackDepth/Registers quotas have
-    // already admitted this invocation, and before the frame actually
-    // exists on the stack - see ssf08_1759_steps_calls_contract_decision.md
-    // §4 and §6.
-    if !vm.callstack.is_empty() {
-        vm.calls = charge_counter(vm.calls, vm.config.quotas.max_calls, QuotaKind::Calls)?;
-    }
     vm.callstack.push(frame);
     Ok(())
 }
@@ -6414,12 +6417,21 @@ mod tests {
     /// the configured Step budget must be stopped deterministically by
     /// `Steps`, not run forever and not stopped by any other quota (no
     /// calls, no growing registers, no effect opcodes are in this program).
+    ///
+    /// The natural bound (10_000, ~50x the configured budget) is
+    /// deliberately small rather than near-infinite: this keeps the test
+    /// itself fast, and - more importantly - keeps its own mutation proof
+    /// (removing the Steps charge) a fast, ordinary test *failure* rather
+    /// than a multi-minute test *hang*. A near-infinite bound would still
+    /// prove the same property when the implementation is correct, but
+    /// would turn "the charge was removed" into "the test suite hangs",
+    /// which is a poor permanent regression guard.
     #[test]
     fn vm_steps_deterministically_stops_a_verified_backward_loop() {
         let src = r#"
             fn main() {
                 let mut i: i32 = 0;
-                while i < 1000000000 {
+                while i < 10000 {
                     i = i + 1;
                 }
                 return;
@@ -6620,6 +6632,133 @@ mod tests {
         assert_eq!(
             vm.calls, 0,
             "a call rejected by Frames must not itself consume a Call"
+        );
+    }
+
+    /// Same proof as above, for `StackDepth` - which fails closed as
+    /// `RuntimeError::StackOverflow` rather than `QuotaExceeded`, per the
+    /// existing compatibility mapping, but must equally leave `Calls`
+    /// unmoved since it too is checked before the Calls charge in
+    /// `push_frame`'s admission order (#1759 §6).
+    #[test]
+    fn vm_nested_call_rejected_by_stack_depth_does_not_consume_calls() {
+        let src = r#"
+            fn helper() { return; }
+            fn main() { helper(); return; }
+        "#;
+        let bytes = compile_program_to_semcode(src).expect("compile");
+        let mut config = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
+        config.quotas.max_stack_depth = 1;
+        let (vm, result) = run_semcode_for_test(&bytes, config);
+        assert_eq!(result.unwrap_err(), RuntimeError::StackOverflow);
+        assert_eq!(
+            vm.calls, 0,
+            "a call rejected by StackDepth must not itself consume a Call"
+        );
+    }
+
+    /// Same proof for `Registers`, the last structural admission check
+    /// before Calls in the frozen order (#1759 §6) - the C1 corrective
+    /// checkpoint moved the Calls charge to fire immediately after this
+    /// check succeeds and strictly before any frame state (registers,
+    /// ownership setup, the `Frame` itself) is materialized, so this test
+    /// also guards against Calls being charged even though no frame content
+    /// was ever built for the rejected invocation.
+    ///
+    /// Built via raw `IrInstr` rather than compiled source: `push_frame`'s
+    /// own `initial_reg_count` check is `16usize.max(args.len())`, so
+    /// exceeding it for a *nested* call while the root stays within budget
+    /// requires `args.len() > 16` - but through the compiled surface
+    /// language every one of N call arguments must simultaneously occupy
+    /// its own register at the call site, so the *caller* would need N
+    /// live registers to marshal them, tripping the caller's own
+    /// register-growth check before `push_frame` for the callee is ever
+    /// reached (a real construction bug caught by re-running this exact
+    /// mutation proof after C1). The raw `IrInstr::Call.args: Vec<u16>`
+    /// list has no such constraint - listing the same register 17 times
+    /// gives `helper` an `args.len()` of 17 while `main` only ever
+    /// populates that one register, so `main`'s own registers never grow
+    /// past 1.
+    #[test]
+    fn vm_nested_call_rejected_by_registers_does_not_consume_calls() {
+        let main_fn = IrFunction {
+            name: "main".to_string(),
+            instrs: vec![
+                IrInstr::LoadI32 { dst: 0, val: 1 },
+                IrInstr::Call {
+                    dst: None,
+                    name: "helper".to_string(),
+                    args: vec![0; 17],
+                },
+                IrInstr::Ret { src: None },
+            ],
+            ownership_events: Vec::new(),
+            params: Vec::new(),
+        };
+        let helper_fn = IrFunction {
+            name: "helper".to_string(),
+            instrs: vec![IrInstr::Ret { src: None }],
+            ownership_events: Vec::new(),
+            params: vec![CallableValueFamily::I32; 17],
+        };
+        let bytes = emit_ir_to_semcode(&[main_fn, helper_fn], false).expect("emit test program");
+        let mut config = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
+        config.quotas.max_registers = 16;
+        let (vm, result) = run_semcode_for_test(&bytes, config);
+        assert_eq!(
+            result.unwrap_err(),
+            RuntimeError::QuotaExceeded(QuotaExceeded {
+                kind: QuotaKind::Registers,
+                limit: 16,
+                used: 17,
+            })
+        );
+        assert_eq!(
+            vm.calls, 0,
+            "a call rejected by Registers must not itself consume a Call"
+        );
+    }
+
+    /// Same proof for a signature/arity (`validate_call_arguments`)
+    /// rejection - the *earliest* admission check in `push_frame`, ahead of
+    /// even Frames. Built via raw `IrInstr` (bypassing the source-level
+    /// frontend's own static type checking, which would otherwise reject
+    /// this mismatch before it ever reached the VM) and run through the
+    /// same raw/unverified `parse_semcode` path `run_semcode_for_test` uses,
+    /// so the VM's own independent runtime-family check - not the verifier -
+    /// is what actually fires here.
+    #[test]
+    fn vm_nested_call_rejected_by_signature_mismatch_does_not_consume_calls() {
+        let main_fn = IrFunction {
+            name: "main".to_string(),
+            instrs: vec![
+                IrInstr::LoadI32 { dst: 0, val: 42 },
+                IrInstr::Call {
+                    dst: None,
+                    name: "helper".to_string(),
+                    args: vec![0],
+                },
+                IrInstr::Ret { src: None },
+            ],
+            ownership_events: Vec::new(),
+            params: Vec::new(),
+        };
+        let helper_fn = IrFunction {
+            name: "helper".to_string(),
+            instrs: vec![IrInstr::Ret { src: None }],
+            ownership_events: Vec::new(),
+            params: vec![CallableValueFamily::Bool],
+        };
+        let bytes = emit_ir_to_semcode(&[main_fn, helper_fn], false).expect("emit test program");
+        let config = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
+        let (vm, result) = run_semcode_for_test(&bytes, config);
+        match result.unwrap_err() {
+            RuntimeError::TypeMismatchRuntime(_) => {}
+            other => panic!("expected a runtime family mismatch, got {other:?}"),
+        }
+        assert_eq!(
+            vm.calls, 0,
+            "a call rejected by signature/arity validation must not itself consume a Call"
         );
     }
 
