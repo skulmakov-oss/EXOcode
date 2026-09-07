@@ -6867,13 +6867,14 @@ mod tests {
     // these call it directly against a minimally constructed `VM` rather
     // than driving a full compiled program - the same "test the extracted
     // policy function directly" pattern already used for `charge_counter`
-    // itself. `tests/ssf04_effect_quota.rs`'s existing ordinary-case
-    // coverage (exact boundary, limit=0, capability-denied non-charge,
-    // quota-blocks-host) exercises `ApplicationVmHost::bump_effect_calls` -
-    // an architecturally separate counter for the application-host trust
-    // boundary, not this one. It stays green because this repair does not
-    // touch it, but it is not itself evidence for the function repaired
-    // here; the direct tests below are.
+    // itself. The #1900 regression matrix covers both independent
+    // `EffectCalls` charge paths: this free VM effect-opcode counter is
+    // tested directly below; `ApplicationVmHost` (a separate counter for
+    // the application-builtin trust boundary) has its own direct
+    // numeric-ceiling tests later in this block; and
+    // `tests/ssf04_effect_quota.rs` independently preserves the ordinary
+    // application-builtin semantics (exact boundary, zero limit,
+    // capability-denied non-charge, quota-blocks-host) across both.
 
     fn vm_for_effect_calls_test(effect_calls: usize, max_effect_calls: usize) -> VM {
         let mut config = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
