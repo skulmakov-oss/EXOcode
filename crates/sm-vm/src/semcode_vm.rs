@@ -1857,10 +1857,19 @@ impl<'a, H: ApplicationHostAbi, C: CapabilityChecker> ApplicationVmHost<'a, H, C
     /// Charges one effect-call quota unit for an application host operation that
     /// already passed its capability check. Must run after `require`/`require_observation`
     /// and before the actual host dispatch, so quota exhaustion blocks the effect itself.
+    ///
+    /// #1900 (FA-08-011): reuses the shared `charge_counter` primitive - the
+    /// application-builtin boundary's own `EffectCalls` counter, independent
+    /// of the free-function `bump_effect_calls(vm)` used by Gate/Pulse/
+    /// State/Event/Clock opcodes, but charging the identical `QuotaKind`.
+    /// Both must share one arithmetic authority; this was the sibling
+    /// unchecked increment discovered while repairing the other.
     fn bump_effect_calls(&mut self) -> Result<(), RuntimeError> {
-        let next = self.effect_calls + 1;
-        enforce_quota(&self.quotas, QuotaKind::EffectCalls, next)?;
-        self.effect_calls = next;
+        self.effect_calls = charge_counter(
+            self.effect_calls,
+            self.quotas.max_effect_calls,
+            QuotaKind::EffectCalls,
+        )?;
         Ok(())
     }
 }
@@ -6973,6 +6982,125 @@ mod tests {
             host.reads.is_empty(),
             "the host must never be called once the quota rejects the charge"
         );
+    }
+
+    /// A minimal `ApplicationHostAbi` implementor for the sibling
+    /// `ApplicationVmHost::bump_effect_calls` tests below - never actually
+    /// invoked, since those tests call `bump_effect_calls` directly rather
+    /// than dispatching a real application builtin.
+    struct UnusedApplicationHost;
+
+    impl ApplicationHostAbi for UnusedApplicationHost {
+        fn args_read(&mut self, _index: u32) -> Result<String, AbiError> {
+            unimplemented!("not exercised by direct bump_effect_calls tests")
+        }
+        fn stdin_read_text(&mut self) -> Result<String, AbiError> {
+            unimplemented!("not exercised by direct bump_effect_calls tests")
+        }
+        fn stdout_write(&mut self, _text: &str) -> Result<(), AbiError> {
+            unimplemented!("not exercised by direct bump_effect_calls tests")
+        }
+        fn stderr_write(&mut self, _text: &str) -> Result<(), AbiError> {
+            unimplemented!("not exercised by direct bump_effect_calls tests")
+        }
+        fn path_inspect(&mut self, _path: &str) -> Result<bool, AbiError> {
+            unimplemented!("not exercised by direct bump_effect_calls tests")
+        }
+        fn fs_read_text(&mut self, _path: &str) -> Result<String, AbiError> {
+            unimplemented!("not exercised by direct bump_effect_calls tests")
+        }
+        fn fs_write_text(&mut self, _path: &str, _text: &str) -> Result<(), AbiError> {
+            unimplemented!("not exercised by direct bump_effect_calls tests")
+        }
+        fn time_duration_millis(&mut self) -> Result<u32, AbiError> {
+            unimplemented!("not exercised by direct bump_effect_calls tests")
+        }
+    }
+
+    fn application_vm_host_for_test<'a>(
+        host: &'a mut UnusedApplicationHost,
+        capabilities: &'a prom_cap::CapabilityManifest,
+        effect_calls: usize,
+        max_effect_calls: usize,
+    ) -> ApplicationVmHost<'a, UnusedApplicationHost, prom_cap::CapabilityManifest> {
+        let mut quotas = RuntimeQuotas::verified_local();
+        quotas.max_effect_calls = max_effect_calls;
+        ApplicationVmHost {
+            host,
+            capabilities,
+            observed: false,
+            quotas,
+            effect_calls,
+        }
+    }
+
+    // --- #1900 (FA-08-011), owner-authorized scope expansion: the sibling
+    // `ApplicationVmHost::bump_effect_calls` charge path shares the exact
+    // same `QuotaKind::EffectCalls` resource and had the identical
+    // unchecked-increment defect - discovered while repairing the
+    // free-function path above, repaired here in the same checkpoint
+    // rather than deferred to a second issue, since both are production
+    // charge sites for one quota resource, not two separate features.
+
+    #[test]
+    fn application_vm_host_bump_effect_calls_admits_under_limit() {
+        let mut host = UnusedApplicationHost;
+        let capabilities = prom_cap::CapabilityManifest::for_application_profile(
+            prom_cap::ApplicationCapabilityProfile::Pure,
+        );
+        let mut bridge = application_vm_host_for_test(&mut host, &capabilities, 2, 4);
+        bridge.bump_effect_calls().expect("must admit");
+        assert_eq!(bridge.effect_calls, 3);
+    }
+
+    /// The #1900 edge itself, for the sibling counter: `effect_calls`
+    /// already at `usize::MAX` with a `usize::MAX` limit too, so the
+    /// ordinary `next > limit` comparison could never fire - only
+    /// `checked_add` failing closed on the increment itself catches this.
+    #[test]
+    fn application_vm_host_bump_effect_calls_fails_closed_at_usize_max_with_usize_max_limit() {
+        let mut host = UnusedApplicationHost;
+        let capabilities = prom_cap::CapabilityManifest::for_application_profile(
+            prom_cap::ApplicationCapabilityProfile::Pure,
+        );
+        let mut bridge =
+            application_vm_host_for_test(&mut host, &capabilities, usize::MAX, usize::MAX);
+        let err = bridge.bump_effect_calls().unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::QuotaExceeded(QuotaExceeded {
+                kind: QuotaKind::EffectCalls,
+                limit: usize::MAX,
+                used: usize::MAX,
+            })
+        );
+        assert_eq!(
+            bridge.effect_calls,
+            usize::MAX,
+            "the counter must remain at usize::MAX, never wrap to 0"
+        );
+    }
+
+    /// Same ceiling case with a small, distinct configured limit - proves
+    /// saturation applies only to the unrepresentable attempted usage
+    /// (`used`), never to the caller's real configured `limit`.
+    #[test]
+    fn application_vm_host_bump_effect_calls_fails_closed_at_usize_max_with_distinct_limit() {
+        let mut host = UnusedApplicationHost;
+        let capabilities = prom_cap::CapabilityManifest::for_application_profile(
+            prom_cap::ApplicationCapabilityProfile::Pure,
+        );
+        let mut bridge = application_vm_host_for_test(&mut host, &capabilities, usize::MAX, 5);
+        let err = bridge.bump_effect_calls().unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::QuotaExceeded(QuotaExceeded {
+                kind: QuotaKind::EffectCalls,
+                limit: 5,
+                used: usize::MAX,
+            })
+        );
+        assert_eq!(bridge.effect_calls, usize::MAX);
     }
 
     // --- #1771 (FA-09-003, umbrella #1617) regression matrix ---------------
