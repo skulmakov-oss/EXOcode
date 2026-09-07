@@ -121,6 +121,22 @@ point per `docs/spec/vm.md`'s "Callable Runtime Family Enforcement" section;
 the instruction-dispatch loop for steps), with both a finite-backward-loop
 and a repeated-call regression test.
 
+**Decision update (contract frozen, no implementation):** the three
+contract questions above have been frozen in
+`docs/roadmap/stable_foundation/ssf08_1759_steps_calls_contract_decision.md` -
+Step = one decoded-opcode dispatch attempt, charged before semantic
+execution; Call = one admitted, non-root `push_frame` invocation (charged
+last, after signature/Frames/StackDepth/Registers admission, using the
+already-existing `vm.callstack.len() > 0` signal `push_frame` computes for
+its own Frames check to exempt the root/entry frame); exhaustion keeps the
+existing `used > limit` convention unchanged; failure channel is
+`RuntimeError::QuotaExceeded`, explicitly not `RuntimeTrap::QuotaExceeded`
+(that remains #1763's own, independent question - this decision does not
+resolve it). **This is a contract decision only. #1759 remains OPEN. No
+counter, no `enforce_quota` call site, and no test were added by this
+update - AC4.a remains not satisfied for `Steps`/`Calls` until a separately
+authorized implementation checkpoint lands.**
+
 ## 4. #1760 — `trace_enabled` / `max_trace_entries`
 
 **Fresh trace.** Repository-wide (`grep -rn "trace_enabled"`, all `.rs`
