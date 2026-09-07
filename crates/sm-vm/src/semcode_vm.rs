@@ -179,6 +179,16 @@ pub struct VM {
     pub callstack: Vec<Frame>,
     pub config: ExecutionConfig,
     pub effect_calls: usize,
+    /// #1759: execution-wide opcode-dispatch fuel counter, per
+    /// `ssf08_1759_steps_calls_contract_decision.md` - charged once per
+    /// successfully decoded opcode in `exec_loop_with_profile`, before that
+    /// instruction's semantic body runs. Never reset by frame entry/exit.
+    pub steps: usize,
+    /// #1759: execution-wide admitted non-root call counter, per
+    /// `ssf08_1759_steps_calls_contract_decision.md` - charged once per
+    /// `push_frame` invocation that occurs while the callstack is already
+    /// non-empty. The root/entry frame never charges this counter.
+    pub calls: usize,
     pub symbols: RuntimeSymbolTable,
     /// PRNG state for random_seed / random_next_i32 (xorshift64; 0 = unseeded).
     pub prng_state: u64,
@@ -837,6 +847,8 @@ pub fn run_verified_entry_semcode_with_host_and_capabilities_and_config<
         callstack: Vec::new(),
         config,
         effect_calls: 0,
+        steps: 0,
+        calls: 0,
         symbols: program.runtime_symbols,
         prng_state: 0,
     };
@@ -861,6 +873,8 @@ pub fn run_verified_entry_semcode_with_application_host_and_capabilities_and_con
         callstack: Vec::new(),
         config,
         effect_calls: 0,
+        steps: 0,
+        calls: 0,
         symbols: program.runtime_symbols,
         prng_state: 0,
     };
@@ -944,6 +958,8 @@ pub fn run_verified_function_semcode_with_args_and_config(
         callstack: Vec::new(),
         config,
         effect_calls: 0,
+        steps: 0,
+        calls: 0,
         symbols: program.runtime_symbols,
         prng_state: 0,
     };
@@ -971,6 +987,8 @@ pub fn run_verified_entry_semcode_with_profile(
         callstack: Vec::new(),
         config,
         effect_calls: 0,
+        steps: 0,
+        calls: 0,
         symbols: program.runtime_symbols,
         prng_state: 0,
     };
@@ -1027,6 +1045,8 @@ fn run_vm_program_view_with_entry_and_config_with_observation_runtime<'a>(
         callstack: Vec::new(),
         config,
         effect_calls: 0,
+        steps: 0,
+        calls: 0,
         symbols: program.runtime_symbols,
         prng_state: 0,
     };
@@ -1992,6 +2012,14 @@ where
         let mut cur = f.instr_start + pc;
         let opcode = Opcode::from_byte(read_u8(&f.code, &mut cur).map_err(map_format_err)?)
             .map_err(map_format_err)?;
+        // #1759: the sole Steps choke point - charged immediately after a
+        // successful opcode decode, before profiling (non-authoritative),
+        // the write-execution-site check, and this opcode's own semantic
+        // body. A failed decode above never reaches this line, so a
+        // malformed opcode byte charges no Step. No refund on a later
+        // failure within this same dispatch - see
+        // ssf08_1759_steps_calls_contract_decision.md §2-§3.
+        vm.steps = charge_counter(vm.steps, vm.config.quotas.max_steps, QuotaKind::Steps)?;
         profile.record_opcode(opcode);
         // #1891 Checkpoint W2F: check every Write path attached to this
         // exact PC against the frame's currently active borrows BEFORE the
@@ -3075,6 +3103,19 @@ fn push_frame(
         func: f.name.clone(),
         return_dst,
     };
+    // #1759: the sole Calls choke point. `push_frame` is the single,
+    // universal frame-construction path (root/entry and every nested
+    // Opcode::Call/ClosureCall invocation alike), so the root exemption
+    // uses the same structural signal already computed above for the
+    // Frames quota: the callstack was empty before this push only for the
+    // very first (root/entry) frame of an execution. Charged last, after
+    // signature validation and the Frames/StackDepth/Registers quotas have
+    // already admitted this invocation, and before the frame actually
+    // exists on the stack - see ssf08_1759_steps_calls_contract_decision.md
+    // §4 and §6.
+    if !vm.callstack.is_empty() {
+        vm.calls = charge_counter(vm.calls, vm.config.quotas.max_calls, QuotaKind::Calls)?;
+    }
     vm.callstack.push(frame);
     Ok(())
 }
@@ -3183,6 +3224,30 @@ fn enforce_quota(quotas: &RuntimeQuotas, kind: QuotaKind, used: usize) -> Result
         return Err(RuntimeError::QuotaExceeded(exceeded));
     }
     Ok(())
+}
+
+/// #1759: shared charge primitive for the `Steps`/`Calls` execution-wide
+/// counters, per `ssf08_1759_steps_calls_contract_decision.md` §10 - the
+/// only place either counter is incremented. Overflow-safe by construction:
+/// `used.checked_add(1)` never wraps. When the increment itself would
+/// overflow (`used` was already `usize::MAX`), this fails closed with the
+/// same `RuntimeError::QuotaExceeded` channel, reporting `used: usize::MAX`
+/// as SATURATED REPORTING for that one unrepresentable attempted-usage case
+/// only - never a silent wraparound, never a new error channel.
+fn charge_counter(used: usize, limit: usize, kind: QuotaKind) -> Result<usize, RuntimeError> {
+    match used.checked_add(1) {
+        Some(next) if next > limit => Err(RuntimeError::QuotaExceeded(QuotaExceeded {
+            kind,
+            limit,
+            used: next,
+        })),
+        Some(next) => Ok(next),
+        None => Err(RuntimeError::QuotaExceeded(QuotaExceeded {
+            kind,
+            limit,
+            used: usize::MAX,
+        })),
+    }
 }
 
 fn bump_effect_calls(vm: &mut VM) -> Result<(), RuntimeError> {
@@ -5162,6 +5227,8 @@ mod tests {
             callstack: Vec::new(),
             config: ExecutionConfig::for_context(ExecutionContext::VerifiedLocal),
             effect_calls: 0,
+            steps: 0,
+            calls: 0,
             symbols: program.runtime_symbols,
             prng_state: 0,
         };
@@ -5207,6 +5274,8 @@ mod tests {
             callstack: Vec::new(),
             config: ExecutionConfig::for_context(ExecutionContext::VerifiedLocal),
             effect_calls: 0,
+            steps: 0,
+            calls: 0,
             symbols: program.runtime_symbols,
             prng_state: 0,
         };
@@ -5245,6 +5314,8 @@ mod tests {
             callstack: Vec::new(),
             config: ExecutionConfig::for_context(ExecutionContext::VerifiedLocal),
             effect_calls: 0,
+            steps: 0,
+            calls: 0,
             symbols: program.runtime_symbols,
             prng_state: 0,
         };
@@ -5273,6 +5344,8 @@ mod tests {
             callstack: Vec::new(),
             config: ExecutionConfig::for_context(ExecutionContext::VerifiedLocal),
             effect_calls: 0,
+            steps: 0,
+            calls: 0,
             symbols: program.runtime_symbols,
             prng_state: 0,
         };
@@ -6149,6 +6222,469 @@ mod tests {
         );
     }
 
+    // --- #1759 (FA-08-001) Steps/Calls runtime enforcement ------------------
+    //
+    // Implements the contract frozen by PR #1899
+    // (docs/roadmap/stable_foundation/ssf08_1759_steps_calls_contract_decision.md).
+    // Two test tiers, per that decision's own §10/§12 reproduction design:
+    //   1. direct helper-level tests against `charge_counter` itself, so the
+    //      `usize::MAX` ceiling case is provable without ever executing
+    //      `usize::MAX` real instructions/calls;
+    //   2. real end-to-end VM tests proving the frozen Step/Call semantics,
+    //      precedence, and root-exemption against actually compiled programs.
+
+    #[test]
+    fn charge_counter_admits_when_next_is_under_limit() {
+        assert_eq!(
+            charge_counter(4, 5, QuotaKind::Steps).expect("must admit"),
+            5
+        );
+    }
+
+    #[test]
+    fn charge_counter_admits_when_next_exactly_equals_limit() {
+        assert_eq!(
+            charge_counter(4, 5, QuotaKind::Calls).expect("must admit"),
+            5
+        );
+    }
+
+    #[test]
+    fn charge_counter_rejects_at_zero_limit() {
+        let err = charge_counter(0, 0, QuotaKind::Steps).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::QuotaExceeded(QuotaExceeded {
+                kind: QuotaKind::Steps,
+                limit: 0,
+                used: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn charge_counter_rejects_one_past_limit() {
+        let err = charge_counter(5, 5, QuotaKind::Calls).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::QuotaExceeded(QuotaExceeded {
+                kind: QuotaKind::Calls,
+                limit: 5,
+                used: 6,
+            })
+        );
+    }
+
+    /// #1759 §10: the single unrepresentable-attempted-usage case. `used` was
+    /// already `usize::MAX`, so `checked_add(1)` overflows - this must fail
+    /// closed via the ordinary `QuotaExceeded` channel with `used` SATURATED
+    /// at `usize::MAX` (reporting-only), never a silent wraparound and never
+    /// a new error variant. Exercised directly against the helper so this is
+    /// provable without executing `usize::MAX` real instructions/calls.
+    #[test]
+    fn charge_counter_saturates_used_at_usize_max_on_overflow() {
+        let err = charge_counter(usize::MAX, usize::MAX, QuotaKind::Steps).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::QuotaExceeded(QuotaExceeded {
+                kind: QuotaKind::Steps,
+                limit: usize::MAX,
+                used: usize::MAX,
+            })
+        );
+    }
+
+    /// Same overflow case as above but with a small, distinct `limit`, to
+    /// prove the primitive reports the caller's real configured `limit`
+    /// unchanged - saturation applies only to the unrepresentable `used`
+    /// value, not to `limit`.
+    #[test]
+    fn charge_counter_overflow_reports_the_real_configured_limit() {
+        let err = charge_counter(usize::MAX, 5, QuotaKind::Calls).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::QuotaExceeded(QuotaExceeded {
+                kind: QuotaKind::Calls,
+                limit: 5,
+                used: usize::MAX,
+            })
+        );
+    }
+
+    /// Runs `main` from freshly parsed SemCode bytes to completion or error,
+    /// returning the final `VM` alongside the `Result` so tests can inspect
+    /// `vm.steps`/`vm.calls` in BOTH the success and the failure path (e.g.
+    /// proving a rejected call left the Calls counter unmoved).
+    fn run_semcode_for_test(
+        bytes: &[u8],
+        config: ExecutionConfig,
+    ) -> (VM, Result<(), RuntimeError>) {
+        let program = parse_semcode(bytes).expect("parse must succeed for a compiled test fixture");
+        let mut vm = VM {
+            functions: program.functions,
+            callstack: Vec::new(),
+            config,
+            effect_calls: 0,
+            steps: 0,
+            calls: 0,
+            symbols: program.runtime_symbols,
+            prng_state: 0,
+        };
+        let result = push_frame(&mut vm, "main", Vec::new(), None).and_then(|()| {
+            let mut host = LegacyVmHost;
+            let mut observation = HelloObservationRuntime::discard();
+            exec_loop(&mut vm, &mut host, &mut observation).map(|_| ())
+        });
+        (vm, result)
+    }
+
+    #[test]
+    fn vm_steps_zero_limit_rejects_the_first_opcode() {
+        let src = r#"
+            fn main() { return; }
+        "#;
+        let bytes = compile_program_to_semcode(src).expect("compile");
+        let mut config = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
+        config.quotas.max_steps = 0;
+        let (vm, result) = run_semcode_for_test(&bytes, config);
+        assert_eq!(
+            result.unwrap_err(),
+            RuntimeError::QuotaExceeded(QuotaExceeded {
+                kind: QuotaKind::Steps,
+                limit: 0,
+                used: 1,
+            })
+        );
+        assert_eq!(
+            vm.steps, 0,
+            "the rejected opcode itself must not be charged"
+        );
+    }
+
+    /// Derives the real Step count of a tiny fixed program empirically (a
+    /// generous quota first), then proves the frozen `used > limit`
+    /// exhaustion boundary exactly: the derived count itself must complete,
+    /// and one fewer must fail with `used` equal to that same derived count.
+    #[test]
+    fn vm_steps_exact_limit_completes_and_one_under_rejects() {
+        let src = r#"
+            fn main() {
+                let x: i32 = 1;
+                let y: i32 = x + 1;
+                return;
+            }
+        "#;
+        let bytes = compile_program_to_semcode(src).expect("compile");
+
+        let mut generous = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
+        generous.quotas.max_steps = 1_000_000;
+        let (vm, result) = run_semcode_for_test(&bytes, generous);
+        result.expect("must complete under a generous step budget");
+        let exact = vm.steps;
+        assert!(
+            exact > 0,
+            "a non-trivial program must dispatch at least one opcode"
+        );
+
+        let mut exact_config = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
+        exact_config.quotas.max_steps = exact;
+        let (_, result) = run_semcode_for_test(&bytes, exact_config);
+        result.expect("exactly enough steps must still complete");
+
+        let mut one_under = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
+        one_under.quotas.max_steps = exact - 1;
+        let (vm, result) = run_semcode_for_test(&bytes, one_under);
+        assert_eq!(
+            result.unwrap_err(),
+            RuntimeError::QuotaExceeded(QuotaExceeded {
+                kind: QuotaKind::Steps,
+                limit: exact - 1,
+                used: exact,
+            })
+        );
+        assert_eq!(
+            vm.steps,
+            exact - 1,
+            "no partial charge past the rejected opcode"
+        );
+    }
+
+    /// The reproduction case #1759's own contract decision specifies: a
+    /// verified backward loop whose natural iteration count vastly exceeds
+    /// the configured Step budget must be stopped deterministically by
+    /// `Steps`, not run forever and not stopped by any other quota (no
+    /// calls, no growing registers, no effect opcodes are in this program).
+    #[test]
+    fn vm_steps_deterministically_stops_a_verified_backward_loop() {
+        let src = r#"
+            fn main() {
+                let mut i: i32 = 0;
+                while i < 1000000000 {
+                    i = i + 1;
+                }
+                return;
+            }
+        "#;
+        let bytes = compile_program_to_semcode(src).expect("compile");
+        let mut config = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
+        config.quotas.max_steps = 200;
+        let (_, result) = run_semcode_for_test(&bytes, config);
+        match result.unwrap_err() {
+            RuntimeError::QuotaExceeded(QuotaExceeded {
+                kind: QuotaKind::Steps,
+                ..
+            }) => {}
+            other => panic!("expected Steps exhaustion to stop the loop, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vm_calls_zero_limit_root_only_program_succeeds() {
+        let src = r#"
+            fn main() { return; }
+        "#;
+        let bytes = compile_program_to_semcode(src).expect("compile");
+        let mut config = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
+        config.quotas.max_calls = 0;
+        let (vm, result) = run_semcode_for_test(&bytes, config);
+        result.expect("a root-only program must run under max_calls = 0");
+        assert_eq!(vm.calls, 0);
+    }
+
+    #[test]
+    fn vm_calls_zero_limit_rejects_the_first_nested_call() {
+        let src = r#"
+            fn helper() { return; }
+            fn main() { helper(); return; }
+        "#;
+        let bytes = compile_program_to_semcode(src).expect("compile");
+        let mut config = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
+        config.quotas.max_calls = 0;
+        let (vm, result) = run_semcode_for_test(&bytes, config);
+        assert_eq!(
+            result.unwrap_err(),
+            RuntimeError::QuotaExceeded(QuotaExceeded {
+                kind: QuotaKind::Calls,
+                limit: 0,
+                used: 1,
+            })
+        );
+        assert_eq!(vm.calls, 0, "the rejected call itself must not be charged");
+    }
+
+    /// Primary Calls proof, deliberately iterative/non-recursive so
+    /// `StackDepth` cannot mask this quota (the call stack never exceeds
+    /// depth 2 - `main` plus one `helper` frame at a time - regardless of
+    /// how many times the loop below calls `helper`).
+    #[test]
+    fn vm_calls_exactly_n_nested_calls_succeeds() {
+        let src = r#"
+            fn helper() { return; }
+            fn main() {
+                let mut i: i32 = 0;
+                while i < 3 {
+                    helper();
+                    i = i + 1;
+                }
+                return;
+            }
+        "#;
+        let bytes = compile_program_to_semcode(src).expect("compile");
+        let mut config = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
+        config.quotas.max_calls = 3;
+        let (vm, result) = run_semcode_for_test(&bytes, config);
+        result.expect("exactly N nested calls must be admitted under max_calls = N");
+        assert_eq!(vm.calls, 3);
+    }
+
+    #[test]
+    fn vm_calls_n_plus_one_nested_calls_rejects() {
+        let src = r#"
+            fn helper() { return; }
+            fn main() {
+                let mut i: i32 = 0;
+                while i < 3 {
+                    helper();
+                    i = i + 1;
+                }
+                return;
+            }
+        "#;
+        let bytes = compile_program_to_semcode(src).expect("compile");
+        let mut config = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
+        config.quotas.max_calls = 2;
+        let (vm, result) = run_semcode_for_test(&bytes, config);
+        assert_eq!(
+            result.unwrap_err(),
+            RuntimeError::QuotaExceeded(QuotaExceeded {
+                kind: QuotaKind::Calls,
+                limit: 2,
+                used: 3,
+            })
+        );
+        assert_eq!(vm.calls, 2, "no partial charge past the rejected call");
+    }
+
+    #[test]
+    fn vm_closure_call_consumes_one_call() {
+        let src = r#"
+            fn main() {
+                let offset: f64 = 1.0;
+                let add: Closure(f64 -> f64) = (x => x + offset);
+                let total: f64 = add(2.0);
+                assert(total == 3.0);
+                return;
+            }
+        "#;
+        let bytes = compile_program_to_semcode(src).expect("compile");
+        let config = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
+        let (vm, result) = run_semcode_for_test(&bytes, config);
+        result.expect("closure invocation must complete");
+        assert_eq!(vm.calls, 1, "ClosureCall must consume exactly one Call");
+    }
+
+    /// `sqrt` resolves via `try_eval_builtin_call` (inline, no `push_frame`)
+    /// rather than admitting a real Semantic function - proves builtins are
+    /// structurally excluded from the Calls budget, not merely uncounted by
+    /// omission. `assert` is a dedicated opcode (never `push_frame`-routed
+    /// either), so its presence here does not confound the result.
+    #[test]
+    fn vm_builtin_call_does_not_consume_calls() {
+        let src = r#"
+            fn main() {
+                let y: f64 = sqrt(4.0);
+                assert(y == 2.0);
+                return;
+            }
+        "#;
+        let bytes = compile_program_to_semcode(src).expect("compile");
+        let config = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
+        let (vm, result) = run_semcode_for_test(&bytes, config);
+        result.expect("builtin call must complete");
+        assert_eq!(
+            vm.calls, 0,
+            "a builtin resolved inline must not consume a Call"
+        );
+    }
+
+    /// A `CALL` instruction dispatched with zero Step fuel remaining must be
+    /// stopped by `Steps` before the dispatch loop's `match` body - and
+    /// therefore before `push_frame` - ever runs, so it never reaches the
+    /// point where a Calls charge would apply. Proves the frozen precedence
+    /// (#1759 §3) specifically for the one opcode that spends both budgets.
+    #[test]
+    fn vm_call_opcode_with_no_step_fuel_is_stopped_by_steps_before_calls() {
+        let src = r#"
+            fn helper() { return; }
+            fn main() { helper(); return; }
+        "#;
+        let bytes = compile_program_to_semcode(src).expect("compile");
+        let mut config = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
+        config.quotas.max_steps = 0;
+        let (vm, result) = run_semcode_for_test(&bytes, config);
+        assert_eq!(
+            result.unwrap_err(),
+            RuntimeError::QuotaExceeded(QuotaExceeded {
+                kind: QuotaKind::Steps,
+                limit: 0,
+                used: 1,
+            })
+        );
+        assert_eq!(
+            vm.calls, 0,
+            "Steps exhaustion must preempt any Calls charge"
+        );
+    }
+
+    /// A nested call rejected by an unrelated structural quota (`Frames`
+    /// here) must not consume a Call - `push_frame` returns via `?` before
+    /// ever reaching the Calls charge at its own tail end (#1759 §6).
+    #[test]
+    fn vm_nested_call_rejected_by_frames_does_not_consume_calls() {
+        let src = r#"
+            fn helper() { return; }
+            fn main() { helper(); return; }
+        "#;
+        let bytes = compile_program_to_semcode(src).expect("compile");
+        let mut config = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
+        config.quotas.max_frames = 1;
+        let (vm, result) = run_semcode_for_test(&bytes, config);
+        assert_eq!(
+            result.unwrap_err(),
+            RuntimeError::QuotaExceeded(QuotaExceeded {
+                kind: QuotaKind::Frames,
+                limit: 1,
+                used: 2,
+            })
+        );
+        assert_eq!(
+            vm.calls, 0,
+            "a call rejected by Frames must not itself consume a Call"
+        );
+    }
+
+    /// Runs a raw `IrInstr` program (bypassing the source-level frontend, so
+    /// a real host+capability effect opcode can be exercised directly) and
+    /// returns the final `VM` alongside the result, mirroring
+    /// `run_prometheus_program_capturing_value` but preserving `vm` so
+    /// `vm.calls`/`vm.steps` remain inspectable afterward.
+    fn run_prometheus_program_returning_vm<H: PrometheusHostAbi, C: CapabilityChecker>(
+        instrs: Vec<IrInstr>,
+        host: &mut H,
+        capabilities: &C,
+    ) -> (VM, Result<Value, RuntimeError>) {
+        let bytes = emit_ir_to_semcode(
+            &[IrFunction {
+                name: "main".to_string(),
+                instrs,
+                ownership_events: Vec::new(),
+                params: Vec::new(),
+            }],
+            false,
+        )
+        .expect("emit test program");
+        let config = ExecutionConfig::for_context(ExecutionContext::KernelBound);
+        let token = verify_semcode_token_with_quotas(&bytes, config.quotas)
+            .expect("test program must admit");
+        let entry_token = token.require_entry("main").expect("main entry");
+        let program = prepare_verified_execution(&entry_token).expect("prepare");
+        let mut vm = VM {
+            functions: program.functions,
+            callstack: Vec::new(),
+            config,
+            effect_calls: 0,
+            steps: 0,
+            calls: 0,
+            symbols: program.runtime_symbols,
+            prng_state: 0,
+        };
+        let result = push_frame(&mut vm, entry_token.entry(), Vec::new(), None).and_then(|()| {
+            let mut bridge = PrometheusVmHost { host, capabilities };
+            let mut observation = HelloObservationRuntime::discard();
+            exec_loop(&mut vm, &mut bridge, &mut observation)
+        });
+        (vm, result)
+    }
+
+    /// A `GateRead` effect opcode never calls `push_frame` (it dispatches
+    /// its host call inline in its own `match` arm - see #1759's own
+    /// architecture inspection), so it must not consume a Call either.
+    #[test]
+    fn vm_gate_read_effect_opcode_does_not_consume_calls() {
+        let mut host = prom_abi::RecordingHostAbi::with_read_value(AbiValue::Quad(1));
+        let capabilities = gate_read_capabilities();
+        let (vm, result) = run_prometheus_program_returning_vm(
+            gate_read_into_return_program(),
+            &mut host,
+            &capabilities,
+        );
+        result.expect("gate read program must succeed");
+        assert_eq!(
+            vm.calls, 0,
+            "an effect opcode must not consume the Calls quota"
+        );
+    }
+
     // --- #1771 (FA-09-003, umbrella #1617) regression matrix ---------------
     //
     // `Opcode::MapGet`'s missing-key path reads `default_reg` lazily (only
@@ -6216,6 +6752,8 @@ mod tests {
             callstack: Vec::new(),
             config: ExecutionConfig::for_context(ExecutionContext::VerifiedLocal),
             effect_calls: 0,
+            steps: 0,
+            calls: 0,
             symbols: program.runtime_symbols,
             prng_state: 0,
         };
@@ -8220,6 +8758,8 @@ mod tests {
             callstack: Vec::new(),
             config,
             effect_calls: 0,
+            steps: 0,
+            calls: 0,
             symbols: program.runtime_symbols,
             prng_state: 0,
         };

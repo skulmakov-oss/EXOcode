@@ -143,6 +143,20 @@ test were added by this update - AC4.a remains not satisfied for `Steps`/
 `Calls` until a separately
 authorized implementation checkpoint lands.**
 
+**Implementation update:** the frozen contract above has since been
+implemented - `VM.steps`/`VM.calls` execution-wide counters, the `Steps`
+charge in `exec_loop_with_profile`, the `Calls` charge (root-exempt) in
+`push_frame`, and the shared `checked_add`-based `charge_counter` primitive
+are now live on `main`, backed by direct helper-level `usize::MAX` tests
+and a full end-to-end VM regression suite (zero-limit, exact-limit,
+one-under, backward-loop, root-exemption, `ClosureCall`, builtin-call and
+effect-opcode exclusion, Steps-before-Calls precedence, and
+Frames-rejection non-accounting), each verified by a mutation proof.
+`Steps`/`Calls` move from **INERT** to **ACTIVE** in §10's inventory. **This
+does not satisfy AC4.a globally**: the `EffectCalls` overflow residual
+(§8 finding 4 / #1900) and the remaining Lane 5 findings (#1760-#1763)
+are unaffected and unresolved by this checkpoint.
+
 ## 4. #1760 — `trace_enabled` / `max_trace_entries`
 
 **Fresh trace.** Repository-wide (`grep -rn "trace_enabled"`, all `.rs`
@@ -558,8 +572,8 @@ specifically and only on `#1759`, as stated in §6.
 | `Registers` | `max_registers` | 4096/4096/8192 | Register vector growth | `sm-vm` (frame init + growth) | register write | `RuntimeError::QuotaExceeded` | yes | yes (existing suite) | `quotas.md` | **ACTIVE** |
 | `EffectCalls` | `max_effect_calls` | 1024/0/4096 | Effect-opcode invocation count | `sm-vm` (`bump_effect_calls`) | effect opcode dispatch | `RuntimeError::QuotaExceeded` | yes | yes (existing suite) | `quotas.md` | **ACTIVE, numeric-ceiling overflow discipline not yet qualified** (§8 finding 4) |
 | `SymbolTable` | `max_symbol_table` | 16384 (all profiles) | Program-wide unique runtime symbol count | **`sm-verify`** (not `sm-vm` - see §12) | pre-execution, at admission | verifier `RejectReport` | yes | yes (#1820 suite) | `quotas.md` (ownership line inaccurate, §8) | **ACTIVE, wrong layer documented** |
-| `Steps` | `max_steps` | 100000/100000/250000 | *none* | *none* | *none* | *none* | no | no | `quotas.md` | **INERT** (#1759) |
-| `Calls` | `max_calls` | 16384/16384/32768 | *none* | *none* | *none* | *none* | no | no | `quotas.md` | **INERT** (#1759) |
+| `Steps` | `max_steps` | 100000/100000/250000 | Opcode-dispatch fuel counter | `sm-vm` (`exec_loop_with_profile`) | opcode decode succeeds | `RuntimeError::QuotaExceeded` | yes | yes (incl. backward-loop regression) | `quotas.md`, `vm.md` | **ACTIVE** (#1759, implemented, checked-add overflow discipline) |
+| `Calls` | `max_calls` | 16384/16384/32768 | Admitted non-root Semantic invocation count | `sm-vm` (`push_frame`) | frame push, root-exempt | `RuntimeError::QuotaExceeded` | yes | yes (incl. root-exemption + boundary suite) | `quotas.md`, `vm.md` | **ACTIVE** (#1759, implemented, checked-add overflow discipline) |
 | `ConstPool` | `max_const_pool` | 65536 (all profiles) | *none - no referent concept exists* | *none* | *none* | *none* | no | no | `quotas.md` | **INERT, no referent** (#1761) |
 | `TraceEntries` | `max_trace_entries` | 8192/4096/16384 | *none* | *none* | *none* | *none* | no | no | `quotas.md` | **INERT** (#1760) |
 
@@ -611,8 +625,10 @@ target contract for over-strengthening:
 
 - **AC4.a** — Every quota advertised as an active runtime bound has an
   authoritative resource, charge point, deterministic exhaustion behavior,
-  and test. *(Currently satisfied for `Frames`/`StackDepth`/`Registers`/
-  `EffectCalls`/`SymbolTable`; not satisfied for `Steps`/`Calls`.)*
+  and test. *(Satisfied for `Frames`/`StackDepth`/`Registers`/`SymbolTable`
+  and, as of #1759's implementation, `Steps`/`Calls`; not satisfied for
+  `EffectCalls`, whose counter increment is not yet fail-closed at its own
+  numeric ceiling - §8 finding 4 / #1900.)*
 - **AC4.b** — Inert/deferred resource concepts are not presented as
   enforced runtime quotas. *(Not satisfied: `ConstPool` and, pending a
   decision, `TraceEntries` are presented as enforced quota kinds in

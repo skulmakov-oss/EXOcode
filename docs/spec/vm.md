@@ -97,6 +97,14 @@ Context rule:
 - context selects the runtime quota baseline
 - context does not weaken verifier admission or SemCode safety checks
 
+`Steps` is enforced (#1759) at the single shared instruction-dispatch loop:
+one successfully decoded opcode charges exactly one `Step`, before that
+instruction's own semantic body runs - including a backward jump revisited
+on every loop iteration, making `max_steps` genuine execution fuel rather
+than a diagnostic count. A malformed opcode that fails to decode charges no
+`Step`. Full semantics are frozen in
+`docs/roadmap/stable_foundation/ssf08_1759_steps_calls_contract_decision.md`.
+
 ## Trap And Error Model
 
 Current public runtime error families include:
@@ -209,6 +217,19 @@ arity, since the verifier cannot prove runtime family from register
 storage alone. Both checks independently agree with the same canonical
 signature (see [`semcode.md`](semcode.md#callable-signature-sig0)), never
 a caller-derived or independently-reconstructed one.
+
+`push_frame` also enforces the `Calls` quota (#1759), as the last admission
+check before the frame is actually constructed - after signature validation
+and the `Frames`/`StackDepth`/`Registers` quotas have already succeeded.
+Because `push_frame` is the same single choke point described above, the
+root/entry frame of an execution (the one `push_frame` call made with an
+empty call stack) is structurally exempt: `max_calls = 0` still admits the
+selected entry function, and only blocks its first *nested* invocation.
+Builtins resolved inline via `try_eval_builtin_call` and effect opcodes
+never call `push_frame`, so neither consumes a `Call`. Full semantics
+(charge timing, orthogonality with `Steps`, `usize::MAX` overflow
+discipline) are frozen in
+`docs/roadmap/stable_foundation/ssf08_1759_steps_calls_contract_decision.md`.
 
 ## Runtime Ownership Slice
 
