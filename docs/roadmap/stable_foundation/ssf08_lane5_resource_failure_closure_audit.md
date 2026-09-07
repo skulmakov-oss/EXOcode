@@ -292,10 +292,12 @@ interning), and it is not this quota kind under another name.
 Removal is confirmed source-visible (the golden snapshot
 `tests/golden_snapshots/public_api/sm_runtime_core_lib.txt` locks in both
 `ConstPool` and `max_const_pool`); the decision document also establishes
-that no current compatibility policy blocks intentional narrowing of this
-surface today (`docs/roadmap/language_maturity/stability_and_compatibility.md`
-is itself only "proposed v0," with no stability labels yet assigned to any
-`sm-runtime-core` surface). **This is a contract decision only. `#1761`
+that this surface carries no stable label or binding deprecation
+commitment found by any authority - it is unclassified, not proven stable
+- and that `compatibility_policy_stack.md`'s own "boundary/runtime
+contract changes" review trigger is satisfied by this decision checkpoint
+itself acting as that explicit review. **This is a contract decision only.
+`#1761`
 remains OPEN. No field, variant, baseline value, or golden snapshot was
 touched by this update - AC4.b remains not satisfied for `ConstPool` until
 a separately authorized implementation checkpoint lands.**

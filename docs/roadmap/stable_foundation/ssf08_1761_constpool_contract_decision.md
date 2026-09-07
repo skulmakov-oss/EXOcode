@@ -88,11 +88,18 @@ exists, not authority that the inert surface must survive.
 governance text) requires review for: changing a quota kind's meaning,
 adding a new quota kind, changing a baseline value in a user-visible
 execution path, or changing quota-exhaustion error-reporting semantics.
-**It does not name removal of a quota kind as a listed case at all** - the
-rule is written around additive/meaning changes, not deletions, which is
-itself informative rather than a gap: removing dead vocabulary was
-apparently not anticipated as needing the same review weight as changing
-what live vocabulary means.
+**It does not explicitly enumerate removal as a listed case.** This
+document does not infer platform policy from that silence - a rule not
+naming a case is not itself evidence about how that case should be
+treated. Independently,
+`docs/roadmap/language_maturity/compatibility_policy_stack.md` (Status:
+proposed v0) names "boundary/runtime contract changes" as one of its own
+explicit "Review Triggers" (its own §"Review Triggers", listing source
+syntax, CLI, stdlib, manifest/lockfile, SemCode/Profile meaning, and
+boundary/runtime contract changes alike) requiring explicit compatibility
+review. **This #1761 decision checkpoint is that explicit review** for the
+`ConstPool` surface specifically - not a policy inferred from what the
+narrower quota-specific rule happens not to mention.
 
 `docs/roadmap/language_maturity/stability_and_compatibility.md` (Status:
 **proposed v0**) is the only platform-wide compatibility-policy document,
@@ -107,19 +114,31 @@ under any authority, because that labeling system does not exist yet.
 attributes ownership of "final minimal APIs" to a different phase
 (SSF-03), not to this Lane 5 checkpoint or to SSF-08 generally.
 
-**Conclusion: Stable Foundation is currently allowed to intentionally
-narrow this public API.** The required qualification, established by
-precedent (this exact mechanism was already used, correctly, for #1759's
-additive `VM.steps`/`VM.calls` fields) is: (1) an explicit, human-approved
-regeneration of the golden snapshot via `SM_UPDATE_PUBLIC_API_SNAPSHOTS=1`
-in the future implementation checkpoint - never automatic, never silently
-absorbed; (2) a `docs/spec/quotas.md` update; (3) qualification tests
-updated to stop asserting the removed field/variant exists. No formal
-deprecation cycle is owed today, because no formal stability commitment
-covering this surface exists today - a future, more mature compatibility
-regime might require one, and this document does not foreclose that; it
-only states what is true under the compatibility policy that actually
-exists right now.
+**Conclusion: no stable label or binding deprecation commitment for this
+specific `sm-runtime-core` surface was found.** The current surface is
+therefore **unclassified** rather than proven stable or proven unstable -
+`stability_and_compatibility.md` itself says draft/experimental surfaces
+"may change faster, but must remain labeled as such," which presumes a
+labeling act this platform has not yet performed for any `sm-runtime-core`
+item, `ConstPool` included. This document does not conclude from that gap
+that no deprecation process could ever apply here; it concludes only that
+none currently does, because none has been established for this surface
+by any authority found.
+
+Stable Foundation may therefore perform the intentionally reviewed
+narrowing now - via this decision checkpoint as the explicit compatibility
+review (§2 above) - but the future implementation checkpoint must
+document the change as source-visible and update the approved public-API
+snapshot explicitly rather than treat it as an internal refactor. The
+required qualification is: (1) an explicit, human-approved regeneration of
+the golden snapshot via `SM_UPDATE_PUBLIC_API_SNAPSHOTS=1` - never
+automatic, never silently absorbed (the same mechanism already used,
+correctly, for #1759's additive `VM.steps`/`VM.calls` fields); (2) a
+`docs/spec/quotas.md` update; (3) qualification tests updated to stop
+asserting the removed field/variant exists. A future, more mature
+compatibility regime that does classify this surface and does define a
+deprecation process is not foreclosed by this document - it simply does
+not exist yet, so it cannot be the authority this decision defers to.
 
 ## 3. Decision candidates evaluated
 
@@ -157,11 +176,17 @@ authorities - none succeeds:**
 - **Compatibility commitments:** none exist for this surface today (§2).
   No user-facing doc, release note, or stability label promises
   `QuotaKind::ConstPool`'s continued existence.
-- **External API requirements:** `sm-runtime-core` is an internal
-  workspace crate consumed by other crates in this same repository
-  (`sm-vm`, `sm-verify`); it is not published to a public registry with
-  external, out-of-repo consumers as of this baseline. No external
-  contract references `ConstPool`.
+- **External API requirements:** no repository-governed external
+  compatibility commitment for `QuotaKind::ConstPool`/`max_const_pool` was
+  found - no changelog entry, migration note, or external-facing doc
+  references it. Possible arbitrary out-of-repo source consumers of
+  `sm-runtime-core` cannot be exhaustively disproven and are **not** used
+  as a premise of this decision; the REMOVE disposition rests instead on
+  the affirmative findings already established above - no architectural
+  referent (§1), no enforcement (§1), no serialization/wire dependency
+  (below), no stable-surface commitment found (§2) - combined with the
+  explicit public-API review and golden-snapshot update this same
+  checkpoint performs (§2, §10).
 - **Future-format commitments:** no SemCode header revision
   (`HEADER_V21`/`SEMCOD21` etc.) or wire-format document reserves a
   `ConstPool`-shaped section. The wire format has no concept of a constant
