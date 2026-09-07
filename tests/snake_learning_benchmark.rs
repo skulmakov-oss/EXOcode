@@ -68,16 +68,20 @@ fn check_run_compile_verify(rel: &str) {
 /// exceeds it by exactly one opcode (`QuotaExceeded { kind: Steps, limit:
 /// 100000, used: 100001 }`) - a real violation of an already-existing,
 /// already-documented contract that #1759's enforcement correctly surfaced,
-/// not a defect in #1759 itself. Left ignored rather than silently "fixed"
-/// by editing this benchmark's content/parameters, adding a CLI quota
-/// override, or raising the published `verified_local` baseline - each is a
-/// legitimate but separate decision outside #1759's own narrow contract
-/// scope (docs/roadmap/stable_foundation/ssf08_1759_steps_calls_contract_decision.md),
-/// recorded as a new residual finding in
+/// not a defect in #1759 itself. Tracked as its own issue, #1902
+/// (FA-08-012), independent of #1759 - #1759 will close once its own
+/// implementation lands, and this residual must not become an ignore
+/// annotation citing an already-closed issue. Left ignored rather than
+/// silently "fixed" by editing this benchmark's content/parameters, adding
+/// a CLI quota override, or raising the published `verified_local`
+/// baseline - each is a legitimate but separate decision belonging to
+/// #1902, not to #1759's own narrow contract scope
+/// (docs/roadmap/stable_foundation/ssf08_1759_steps_calls_contract_decision.md).
+/// Also recorded in
 /// docs/roadmap/stable_foundation/ssf08_lane5_resource_failure_closure_audit.md
-/// §8, pending a separately authorized fix.
+/// §8 finding 5, pending #1902's own separately authorized fix.
 #[test]
-#[ignore = "FA-08-001 (#1759): exceeds the published VerifiedLocal max_steps=100000 budget by 1 opcode now that Steps is actually enforced - see ssf08_lane5_resource_failure_closure_audit.md §8"]
+#[ignore = "FA-08-012 (#1902): exceeds the published VerifiedLocal max_steps=100000 budget by 1 opcode now that Steps is actually enforced - see ssf08_lane5_resource_failure_closure_audit.md §8 finding 5"]
 fn snake_learning_passes_check_run_compile_verify() {
     check_run_compile_verify("examples/benchmarks/snake_learning.sm");
 }
