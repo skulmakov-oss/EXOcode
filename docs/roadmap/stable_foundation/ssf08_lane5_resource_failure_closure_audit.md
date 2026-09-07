@@ -155,7 +155,12 @@ Frames-rejection non-accounting), each verified by a mutation proof.
 `Steps`/`Calls` move from **INERT** to **ACTIVE** in §10's inventory. **This
 does not satisfy AC4.a globally**: the `EffectCalls` overflow residual
 (§8 finding 4 / #1900) and the remaining Lane 5 findings (#1760-#1763)
-are unaffected and unresolved by this checkpoint.
+are unaffected and unresolved by this checkpoint. Activating real
+enforcement also surfaced one genuine, previously-invisible quota
+violation - `examples/benchmarks/snake_learning.sm` exceeds the published
+`max_steps = 100000` `VerifiedLocal` baseline by one opcode (§8 finding 5) -
+left as a documented, `#[ignore]`d known-issue rather than fixed as part of
+this checkpoint.
 
 ## 4. #1760 — `trace_enabled` / `max_trace_entries`
 
@@ -501,11 +506,29 @@ the five filed issues rather than silently expanding implementation scope:
    `trace_enabled`) **and is not repaired by `#1759`** (`Steps`/`Calls` are
    new counters; `EffectCalls` is a separate, pre-existing one) - `#1759`'s
    implementation scope is explicitly not expanded to fix it. **Tracking
-   issue: not yet allocated** - whether this warrants its own filed issue is
-   a separate decision to make after the #1759 contract PR lands, not one
-   made by this audit.
+   issue: #1900 (FA-08-011)**, filed after the contract PR landed.
+5. **`examples/benchmarks/snake_learning.sm` exceeds the already-published
+   `VerifiedLocal` `max_steps = 100000` baseline by exactly one opcode
+   (`QuotaExceeded { kind: Steps, limit: 100000, used: 100001 }`).**
+   Discovered running the full workspace test suite during #1759's own
+   implementation checkpoint - `tests/snake_learning_benchmark.rs`'s `smc
+   run` invocation hits `cmd_run_controlled_observation`, hardcoded to
+   `ExecutionConfig::for_context(ExecutionContext::VerifiedLocal)` with no
+   CLI override available. **Classification: FIRST REAL QUOTA VIOLATION
+   SURFACED BY #1759's ACTIVATION** - not a defect in #1759's
+   implementation; `Steps` was always meant to bound this execution, and
+   this benchmark's own step usage always nominally exceeded it, invisibly,
+   until enforcement existed. **AC impact: none directly** (AC4.a concerns
+   the quota mechanism's own correctness, not every consumer's compliance
+   with it). Explicitly not fixed here - editing this benchmark's own
+   parameters, adding a CLI quota-override flag to `smc run`, and raising
+   the published `verified_local` baseline are each a legitimate but
+   separate decision outside #1759's narrow contract-implementation scope.
+   Per explicit user decision, `snake_learning_passes_check_run_compile_verify`
+   is left `#[ignore]`d with a citation back to this finding rather than
+   silently patched. **Tracking issue: not yet allocated.**
 
-None of these four is added to Lane 5's implementation scope by this audit.
+None of these five is added to Lane 5's implementation scope by this audit.
 They are recorded for a future, explicitly-scoped decision, per the
 governing brief's own instruction not to silently expand scope.
 
