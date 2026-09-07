@@ -276,6 +276,30 @@ own "Version Review Rule," not a free relabeling) - this is a genuine
 contract decision, not a mechanical deletion, so it should not be done as a
 side effect of another checkpoint.
 
+**Decision update (contract frozen, no implementation):** the mechanism
+question above has been decided in
+`docs/roadmap/stable_foundation/ssf08_1761_constpool_contract_decision.md`
+- **REMOVE**, falsified against RE-SCOPE (every candidate referent either
+duplicates an existing, correctly-named quota kind or is not a resource at
+all) and against a RESERVED/deprecated compatibility surface (no
+compatibility authority requires one, and the codebase's own dominant
+struct-literal-with-`..Default` construction pattern would make a
+`#[deprecated]` attribute silently ineffective at most call sites). Fresh
+re-derivation confirms no real ConstPool-shaped resource exists anywhere
+in the current codebase - `RuntimeSymbolTable`/`QuotaKind::SymbolTable`
+already owns the one genuine pooling mechanism in this design (string
+interning), and it is not this quota kind under another name.
+Removal is confirmed source-visible (the golden snapshot
+`tests/golden_snapshots/public_api/sm_runtime_core_lib.txt` locks in both
+`ConstPool` and `max_const_pool`); the decision document also establishes
+that no current compatibility policy blocks intentional narrowing of this
+surface today (`docs/roadmap/language_maturity/stability_and_compatibility.md`
+is itself only "proposed v0," with no stability labels yet assigned to any
+`sm-runtime-core` surface). **This is a contract decision only. `#1761`
+remains OPEN. No field, variant, baseline value, or golden snapshot was
+touched by this update - AC4.b remains not satisfied for `ConstPool` until
+a separately authorized implementation checkpoint lands.**
+
 ## 6. #1762 — `ExecutionContext` / quota identity
 
 **Fresh trace.** `ExecutionConfig::new(context, quotas)` (line 257) performs
@@ -641,7 +665,7 @@ specifically and only on `#1759`, as stated in §6.
 | `SymbolTable` | `max_symbol_table` | 16384 (all profiles) | Program-wide unique runtime symbol count | **`sm-verify`** (not `sm-vm` - see §12) | pre-execution, at admission | verifier `RejectReport` | yes | yes (#1820 suite) | `quotas.md` (ownership line inaccurate, §8) | **ACTIVE, wrong layer documented** |
 | `Steps` | `max_steps` | 100000/100000/250000 | Opcode-dispatch fuel counter | `sm-vm` (`exec_loop_with_profile`) | opcode decode succeeds | `RuntimeError::QuotaExceeded` | yes | yes (incl. backward-loop regression) | `quotas.md`, `vm.md` | **ACTIVE** (#1759, implemented, checked-add overflow discipline) |
 | `Calls` | `max_calls` | 16384/16384/32768 | Admitted non-root Semantic invocation count | `sm-vm` (`push_frame`) | frame push, root-exempt | `RuntimeError::QuotaExceeded` | yes | yes (incl. root-exemption + boundary suite) | `quotas.md`, `vm.md` | **ACTIVE** (#1759, implemented, checked-add overflow discipline) |
-| `ConstPool` | `max_const_pool` | 65536 (all profiles) | *none - no referent concept exists* | *none* | *none* | *none* | no | no | `quotas.md` | **INERT, no referent** (#1761) |
+| `ConstPool` | `max_const_pool` | 65536 (all profiles) | *none - no referent concept exists* | *none* | *none* | *none* | no | no | `quotas.md` | **INERT, no referent, REMOVE disposition frozen, not yet implemented** (#1761) |
 | `TraceEntries` | `max_trace_entries` | 8192/4096/16384 | *none* | *none* | *none* | *none* | no | no | `quotas.md` | **INERT** (#1760) |
 
 Every `QuotaKind` variant is accounted for above; no sixth inert kind was
@@ -699,9 +723,13 @@ target contract for over-strengthening:
   `ApplicationVmHost::bump_effect_calls` (application builtins), are now
   fail-closed at the numeric ceiling - §8 findings 4 and 6.)*
 - **AC4.b** — Inert/deferred resource concepts are not presented as
-  enforced runtime quotas. *(Not satisfied: `ConstPool` and, pending a
-  decision, `TraceEntries` are presented as enforced quota kinds in
-  `docs/spec/quotas.md` today without qualification.)*
+  enforced runtime quotas. *(Not satisfied: `ConstPool` and, pending its
+  own decision, `TraceEntries` are still presented as enforced quota kinds
+  in `docs/spec/quotas.md` today. `ConstPool`'s REMOVE disposition is now
+  frozen - see
+  `docs/roadmap/stable_foundation/ssf08_1761_constpool_contract_decision.md`
+  - but not yet implemented; AC4.b remains not satisfied until that
+  removal actually lands.)*
 - **AC4.c** — `ExecutionContext`/provenance does not overstate the quota
   envelope that actually governed execution. *(Not satisfied: `prom-runtime`/
   `prom-audit` record only the context label, and nothing validates
