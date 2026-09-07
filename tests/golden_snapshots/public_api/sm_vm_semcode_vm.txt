@@ -62,6 +62,8 @@ pub functions: HashMap<String, FunctionBytecode>,
 pub callstack: Vec<Frame>,
 pub config: ExecutionConfig,
 pub effect_calls: usize,
+pub steps: usize,
+pub calls: usize,
 pub symbols: RuntimeSymbolTable,
 pub prng_state: u64,
 #[cfg(feature = "vm-profile")]
