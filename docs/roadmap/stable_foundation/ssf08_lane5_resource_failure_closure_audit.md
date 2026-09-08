@@ -258,8 +258,8 @@ remains not satisfied for `TraceEntries`/`trace_enabled` until a
 separately authorized implementation checkpoint executes this
 now-complete mechanic.**
 
-**Implementation update (SPLIT disposition executed, #1760 still OPEN
-pending merge):** `ExecutionConfig::trace_enabled` and
+**Implementation update (SPLIT disposition implemented; issue closure is
+merge-gated):** `ExecutionConfig::trace_enabled` and
 `QuotaKind::TraceEntries` are removed; `RuntimeQuotas::max_trace_entries`
 is renamed to `RuntimeQuotas::max_debug_symbols_per_function` with its
 three profile values (8192/4096/16384) and its `sm-verify` admission
