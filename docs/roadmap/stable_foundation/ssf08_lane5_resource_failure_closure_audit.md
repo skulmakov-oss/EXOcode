@@ -222,6 +222,35 @@ question to account for.
 pair, citing Stable Foundation's actual execution-trace requirements (or
 lack thereof).
 
+**Decision update (contract frozen, no implementation):** the IMPLEMENT vs
+NARROW/REMOVE question above has been decided in
+`docs/roadmap/stable_foundation/ssf08_1760_trace_contract_decision.md` -
+**SPLIT**, not a uniform disposition across all three symbols. Fresh
+re-derivation confirms `trace_enabled` and `QuotaKind::TraceEntries` are
+exactly as inert as `ConstPool` was, with the same REMOVE disposition. But
+this pass corrects a gap in this section's own original evidence above:
+"zero `enforce_quota` call sites" is true for `TraceEntries`, but
+`max_trace_entries`'s raw numeric value has a **real, live, non-`enforce_quota`
+reader** in `crates/sm-verify/src/lib.rs::verify_function_code`, which
+compares a decoded function's `debug_symbols.len()` against
+`quotas.max_trace_entries` as a per-function structural cap - dead code
+for `verified_local`/`kernel_bound` (redundant with `sm-format`'s own
+fixed `MAX_DEBUG_SYMBOLS_PER_FUNCTION = 8192`), but genuinely live for
+`pure_compute` (`max_trace_entries = 4096`, stricter than 8192). This
+field is therefore not inert vocabulary the way `ConstPool` was; it is a
+real, mislabeled, profile-inconsistent debug-symbol bound. The decision
+document freezes: `trace_enabled` → REMOVE; `QuotaKind::TraceEntries` (the
+execution-trace taxonomy member) → REMOVE; `max_trace_entries` → RE-SCOPE
+(rename to something like `max_debug_symbols_per_function`, preserving its
+current real behavior exactly) rather than bare deletion, with a
+documented, not-yet-authorized alternative (delete outright, disclosing
+the resulting loosening of `pure_compute`'s bound) recorded for a future,
+separate decision. **This is a contract decision only. `#1760` remains
+OPEN. No field, variant, baseline value, or golden snapshot was touched by
+this update - AC4.b remains not satisfied for `TraceEntries`/
+`trace_enabled` until a separately authorized implementation checkpoint
+lands.**
+
 ## 5. #1761 — `ConstPool` quota
 
 **Fresh trace.** `QuotaKind::ConstPool`/`max_const_pool`: defined,
@@ -689,7 +718,7 @@ specifically and only on `#1759`, as stated in §6.
 | `SymbolTable` | `max_symbol_table` | 16384 (all profiles) | Program-wide unique runtime symbol count | **`sm-verify`** (not `sm-vm` - see §12) | pre-execution, at admission | verifier `RejectReport` | yes | yes (#1820 suite) | `quotas.md` (ownership line corrected by #1761's implementation PR - see below) | **ACTIVE, correctly documented** |
 | `Steps` | `max_steps` | 100000/100000/250000 | Opcode-dispatch fuel counter | `sm-vm` (`exec_loop_with_profile`) | opcode decode succeeds | `RuntimeError::QuotaExceeded` | yes | yes (incl. backward-loop regression) | `quotas.md`, `vm.md` | **ACTIVE** (#1759, implemented, checked-add overflow discipline) |
 | `Calls` | `max_calls` | 16384/16384/32768 | Admitted non-root Semantic invocation count | `sm-vm` (`push_frame`) | frame push, root-exempt | `RuntimeError::QuotaExceeded` | yes | yes (incl. root-exemption + boundary suite) | `quotas.md`, `vm.md` | **ACTIVE** (#1759, implemented, checked-add overflow discipline) |
-| `TraceEntries` | `max_trace_entries` | 8192/4096/16384 | *none* | *none* | *none* | *none* | no | no | `quotas.md` | **INERT** (#1760) |
+| `TraceEntries` | `max_trace_entries` | 8192/4096/16384 | *not a trace resource - `max_trace_entries`'s raw value bounds per-function debug-symbol count in `sm-verify`, mislabeled* | `sm-verify` (`verify_function_code`, not via `enforce_quota`) | pre-execution, at admission | `VerificationCode::ResourceLimitExceeded` | no | live only for `pure_compute` (4096 < `sm-format`'s fixed 8192 decode-time cap); dead code for the other two profiles | `quotas.md` | **`trace_enabled`/`TraceEntries`-as-tracing: INERT, REMOVE disposition frozen; `max_trace_entries`: real but mislabeled, RE-SCOPE disposition frozen, not yet implemented** (#1760) |
 
 `ConstPool`/`max_const_pool` is intentionally **no longer a row above** -
 it is not a current `RuntimeQuotas`/`QuotaKind` member. #1761's REMOVE
@@ -709,8 +738,12 @@ this exact file and the discrepancy (§8 finding 3) was already proven.
 Every `QuotaKind` variant is accounted for above; at audit time four
 inert kinds were found (`Steps`, `Calls`, `ConstPool`, `TraceEntries`) -
 `Steps`/`Calls` are now `ACTIVE` (#1759) and `ConstPool` is now removed
-entirely (#1761); only `TraceEntries` (#1760) remains inert and
-undecided.
+entirely (#1761); `TraceEntries` (#1760) has a frozen REMOVE/RE-SCOPE
+disposition (see §4's decision update) but is not yet implemented - and,
+unlike the other three, it turned out not to be uniformly inert: its raw
+`max_trace_entries` value has one real, mislabeled, profile-inconsistent
+consumer in `sm-verify`, discovered only during the `#1760` decision pass
+itself.
 
 ## 11. Verifier limits vs runtime quotas (architecture check)
 
@@ -768,8 +801,12 @@ target contract for over-strengthening:
   `docs/roadmap/stable_foundation/ssf08_1761_constpool_contract_decision.md`)
   has landed - it is no longer presented as a quota kind anywhere in
   production code, the public API, or `docs/spec/quotas.md`. Not satisfied
-  globally: `TraceEntries`, pending its own `#1760` decision, is still
-  presented as an enforced quota kind in `docs/spec/quotas.md` today.)*
+  globally: `TraceEntries`'s disposition is now decided (REMOVE for
+  `trace_enabled`/the taxonomy member, RE-SCOPE for the real but
+  mislabeled `max_trace_entries` value - see
+  `docs/roadmap/stable_foundation/ssf08_1760_trace_contract_decision.md`)
+  but not yet implemented; it is still presented as an enforced quota kind
+  in `docs/spec/quotas.md` today.)*
 - **AC4.c** — `ExecutionContext`/provenance does not overstate the quota
   envelope that actually governed execution. *(Not satisfied: `prom-runtime`/
   `prom-audit` record only the context label, and nothing validates
