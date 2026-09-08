@@ -396,3 +396,78 @@ implemented. This document does not delete any field, variant, or golden
 snapshot entry, and does not touch `#1762`, `#1763`, or `#1902`.
 
 **Wait for explicit owner GO before implementation.**
+
+## 14. Implementation update (post-freeze)
+
+The SPLIT disposition frozen in §5 landed exactly as specified, on top of
+`main` at `38964cbd481a358dfb142859932ee5b2a2ea6e1d` (PR #1906's merge
+commit).
+
+- `ExecutionConfig::trace_enabled` - removed (field and its `false`
+  default in `ExecutionConfig::new`). `ExecutionConfig` now carries exactly
+  `context` and `quotas`.
+- `QuotaKind::TraceEntries` - removed from the enum and from
+  `RuntimeQuotas::exceed()`'s match.
+- `RuntimeQuotas::max_trace_entries` - renamed to
+  `RuntimeQuotas::max_debug_symbols_per_function`, values unchanged
+  (`verified_local = 8192`, `pure_compute = 4096`, `kernel_bound = 16384`).
+  `crates/sm-verify/src/lib.rs`'s `verify_function_code` check now reads
+  the renamed field; the comparison, rejection code
+  (`VerificationCode::ResourceLimitExceeded`), and rejection point are
+  byte-for-byte unchanged. Only the diagnostic wording changed, from
+  "exceeding the trace budget of {}" to "exceeding the per-function
+  debug-symbol limit of {}" - the false trace-contract wording could not
+  survive this implementation without recreating the exact problem this
+  checkpoint exists to remove; the underlying rejection semantics
+  (resource, scope, threshold, code) are identical.
+- Compiler fallout after the `sm-runtime-core` edit was exactly the two
+  sites this document's own §1.3 predicted (`crates/sm-verify/src/lib.rs`,
+  the `debug_symbol_count > quotas.max_trace_entries` check and its
+  diagnostic format arguments) - no unaccounted-for production reader
+  appeared.
+- Adversarial proof (the reason §1.3's finding mattered): a real,
+  compiling function with exactly 4096 debug symbols (one per real
+  instruction, built via `emit_ir_to_semcode`, every debug pc a genuine
+  instruction start) is admitted under `pure_compute`; the same
+  construction at 4097 is rejected under `pure_compute` with
+  `VerificationCode::ResourceLimitExceeded`, while remaining **accepted**
+  under `verified_local` (limit 8192) - confirming the rename preserved
+  `pure_compute`'s stricter behavior exactly rather than silently
+  widening it to the decoder's fixed 8192 cap. Two temporary mutations
+  each turned the 4097/`pure_compute` regression RED and were fully
+  reverted: (M1) loosening `pure_compute`'s configured value to 8192, and
+  (M2) bypassing the configured value with a hardcoded 8192 comparison in
+  `sm-verify`.
+- Public API guard: `cargo test --test public_api_contracts` failed RED
+  first, with drift isolated to exactly `TraceEntries,` removed,
+  `pub max_trace_entries: usize,` → `pub max_debug_symbols_per_function:
+  usize,`, and `pub trace_enabled: bool,` removed - no unrelated drift.
+  Regenerated via `SM_UPDATE_PUBLIC_API_SNAPSHOTS=1`, diff reviewed
+  manually, then GREEN.
+- `docs/spec/quotas.md`, `docs/spec/vm.md`, and `docs/spec/verifier.md`
+  updated to active-document the new field and its verifier-admission
+  scope, remove the retired trace vocabulary, and stop claiming
+  `ExecutionConfig` binds "trace enablement." A repository-wide residue
+  audit found zero remaining active references to `trace_enabled`,
+  `QuotaKind::TraceEntries`, `max_trace_entries`, or the old "trace
+  budget" wording anywhere in `crates/**`, `docs/spec/**`, or the public
+  API golden snapshot.
+- **AC4.b, freshly re-audited against the implementation branch (not
+  assumed from this document's own prior text):** every surviving
+  `QuotaKind` variant (`Steps`, `Calls`, `StackDepth`, `Frames`,
+  `Registers`, `SymbolTable`, `EffectCalls`) has a real, current
+  enforcement owner - `Steps`/`Calls`/`StackDepth`/`Frames`/`Registers`/
+  `EffectCalls` charged/enforced in `sm-vm`, `SymbolTable` enforced
+  statically by `sm-verify` (`unique_runtime_symbol_count >
+  quotas.max_symbol_table`, program-wide, at admission). No new inert
+  quota kind or field was discovered. `max_debug_symbols_per_function`
+  itself is correctly classified as verifier-admission policy, not a
+  runtime quota: zero `QuotaKind` membership, zero `sm-vm` charge sites,
+  zero `RuntimeError::QuotaExceeded` paths. **AC4.b: SATISFIED**, pending
+  the same fresh-audit caveat this document already carried in §12 - this
+  is a point-in-time confirmation on the current branch, not a permanent
+  guarantee against future additions.
+
+`#1762`, `#1763`, and `#1902` were not touched by this implementation.
+
+**Wait for explicit owner GO before merge.**

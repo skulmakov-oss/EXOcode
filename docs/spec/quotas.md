@@ -28,7 +28,6 @@ Current quota kinds:
 - `Registers`
 - `SymbolTable`
 - `EffectCalls`
-- `TraceEntries`
 
 Current quota descriptor fields:
 
@@ -39,7 +38,10 @@ Current quota descriptor fields:
 - `max_registers`
 - `max_symbol_table`
 - `max_effect_calls`
-- `max_trace_entries`
+
+`RuntimeQuotas` also carries a field that is not part of this taxonomy -
+`max_debug_symbols_per_function` - see "Verifier Admission Compatibility
+Note" below.
 
 ## Current Baseline Profiles
 
@@ -52,7 +54,6 @@ Current quota descriptor fields:
 - `max_registers = 4096`
 - `max_symbol_table = 16384`
 - `max_effect_calls = 1024`
-- `max_trace_entries = 8192`
 
 ### `pure_compute`
 
@@ -63,7 +64,6 @@ Current quota descriptor fields:
 - `max_registers = 4096`
 - `max_symbol_table = 16384`
 - `max_effect_calls = 0`
-- `max_trace_entries = 4096`
 
 ### `kernel_bound`
 
@@ -74,7 +74,39 @@ Current quota descriptor fields:
 - `max_registers = 8192`
 - `max_symbol_table = 16384`
 - `max_effect_calls = 4096`
-- `max_trace_entries = 16384`
+
+## Verifier Admission Compatibility Note
+
+`RuntimeQuotas` also carries `max_debug_symbols_per_function`:
+
+- `verified_local = 8192`
+- `pure_compute = 4096`
+- `kernel_bound = 16384`
+
+This field:
+
+- is a verifier-side per-function debug-metadata admission limit, enforced
+  by `sm-verify::verify_function_code` against a decoded function's
+  `debug_symbols.len()`
+- is **not** a `QuotaKind` member and is not listed in the quota taxonomy
+  above
+- is **not** charged by `sm-vm` and has no runtime charge point
+- is **not** surfaced as `RuntimeError::QuotaExceeded` - a rejection under
+  this limit is a static admission failure
+  (`VerificationCode::ResourceLimitExceeded`), not a runtime quota
+  exhaustion
+- remains a field on `RuntimeQuotas` only to preserve the existing
+  per-profile admission plumbing (#1760, FA-08-002); it is intentionally
+  kept distinct from the runtime quota taxonomy above rather than merged
+  into it
+
+`sm-format` independently enforces a fixed, profile-independent decode-time
+structural cap, `MAX_DEBUG_SYMBOLS_PER_FUNCTION = 8192`, before this
+verifier-layer check ever runs. `verified_local` (8192) and `kernel_bound`
+(16384, which cannot widen the decoder's own fixed 8192 cap) make this
+verifier-layer check dead code in practice; `pure_compute` (4096) is
+strictly tighter than the decoder's 8192 cap, so this check has real,
+distinct authority only for `pure_compute`.
 
 ## Context Mapping
 

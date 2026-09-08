@@ -443,6 +443,35 @@ never be conflated:
   governing VM execution after admission (`max_steps`, `max_calls`, and so
   on).
 
+**Per-function debug-symbol admission** (#1760, FA-08-002) is a distinct
+artifact-admission check inside `verify_function_code`, separate from both
+`sm-format`'s own fixed decode-time cap and the `VerificationLimits`
+analysis budgets above:
+
+- rule: `env.debug_symbols.len()` (the decoded `DBG0` per-function
+  debug-symbol table: pc/line/col) must not exceed
+  `RuntimeQuotas::max_debug_symbols_per_function` for the active admission
+  profile; violation rejects with
+  `VerificationCode::ResourceLimitExceeded`
+- profile values: `verified_local = 8192`, `pure_compute = 4096`,
+  `kernel_bound = 16384`
+- this is independent of `sm_format::semcode_decode::MAX_DEBUG_SYMBOLS_PER_FUNCTION
+  = 8192`, a fixed, profile-independent structural cap enforced at decode
+  time, before this verifier-layer check ever runs. `verified_local`'s
+  8192 exactly matches the decoder cap, and `kernel_bound`'s 16384 cannot
+  widen it - the decoder already rejects anything above 8192 for every
+  profile - so this check is dead code for both. `pure_compute`'s 4096 is
+  strictly tighter than the decoder's 8192, so this check has real,
+  distinct admission authority only for `pure_compute`.
+- despite living on `RuntimeQuotas` and using
+  `VerificationCode::ResourceLimitExceeded` (the same code family as the
+  artifact/decode resources above), this field is **not** a `QuotaKind`
+  member, is never charged by `sm-vm`, and never surfaces as
+  `RuntimeError::QuotaExceeded` - see
+  [`quotas.md`](quotas.md#verifier-admission-compatibility-note) for the
+  full compatibility note and rationale for why it stays on `RuntimeQuotas`
+  rather than moving into `VerificationLimits`
+
 **Scope of the two `VerificationLimits` fields differs, deliberately**
 (clarified in round 14 of #1756's own review history, after Codex found
 both fields' enforcement did not yet match this intended scope):
