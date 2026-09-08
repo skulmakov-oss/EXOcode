@@ -21,10 +21,13 @@ Depends on: `#1759` (Steps/Calls, CLOSED), `#1900` (EffectCalls overflow,
 CLOSED), `#1761` (ConstPool, CLOSED), `#1760` (TraceEntries/
 `max_debug_symbols_per_function`, CLOSED). All four are now closed on
 `main`, which matters directly: this decision's central finding is that
-`RuntimeQuotas` is the one real, fully-enforced execution/admission
-authority in the system — a claim that would have been only partially true
-before those four checkpoints landed (e.g. `Steps`/`Calls` were unenforced
-before `#1759`, and `max_debug_symbols_per_function`'s real consumer was
+`RuntimeQuotas` is the actual, fully-enforced authority for every
+quota/profile dimension it represents (see §5 for the exact, narrower
+scope of that claim — it does not extend to `VerificationLimits`,
+`sm-format`'s structural caps, unrelated verifier rules, or capability
+policy) — a claim that would have been only partially true before those
+four checkpoints landed (e.g. `Steps`/`Calls` were unenforced before
+`#1759`, and `max_debug_symbols_per_function`'s real consumer was
 mislabeled before `#1760`). The Lane 5 audit's own pre-existing `#1762`
 section (quoted in full in §7 below) explicitly gated a RECORD-style repair
 on `#1759`'s disposition being settled first; it now is.
@@ -97,7 +100,8 @@ plain value copy, again with no `ExecutionContext` involved.
 
 **`ExecutionContext` has zero runtime effect on `sm-vm`'s behavior.** It is
 carried on `VM.config` but never read to branch, gate, or select anything
-during execution. `RuntimeQuotas` is the sole enforcement authority.
+during execution. Of the two, only `RuntimeQuotas` is consulted at any
+`sm-vm` quota-enforcement site.
 
 ### 2.3 `sm-verify` never sees `ExecutionContext` at all
 
@@ -274,11 +278,40 @@ This is a description of current, evidenced behavior, not a new promise.
 
 §2.2 and §2.3 together prove `RuntimeQuotas` — specifically, the resolved
 numeric values sitting in `config.quotas` at the moment `sm-vm`/
-`sm-verify` consume it — is the **sole real effective execution/admission
-envelope** in the system today. Frozen:
+`sm-verify` consume it — is the actual effective authority for the
+quota/profile dimensions `RuntimeQuotas` itself represents: every `sm-vm`
+runtime-quota charge site (§2.2), plus the two `sm-verify` resource checks
+that explicitly consume a `RuntimeQuotas` value (`max_symbol_table`,
+`max_debug_symbols_per_function`, §2.3). Frozen:
 
 > **`RuntimeQuotas` (as carried in `ExecutionConfig.quotas`) is the actual
-> effective execution/admission authority. `ExecutionContext` is not.**
+> effective authority for every quota/profile dimension it represents.
+> `ExecutionContext` is not.**
+
+**This explicitly does not subsume:**
+
+- **`VerificationLimits`** — a distinct, orthogonal verifier envelope
+  (`max_work_units`/`max_state_words`, governing the definite-register-
+  assignment static-analysis pass), never carried inside `RuntimeQuotas`
+  and not addressed by this decision. On `prom-runtime`'s current verify
+  path, `verify_semcode_token_with_quotas` runs against the verifier's
+  *default* `VerificationLimits` (`VerificationLimits::default_profile()`,
+  §2.3) — this decision does not change that, and does not claim to
+  record that independent envelope anywhere in provenance.
+- **`sm-format`'s structural hard caps** (e.g.
+  `MAX_DEBUG_SYMBOLS_PER_FUNCTION = 8192`, `MAX_FUNCTIONS`,
+  `MAX_STRINGS_PER_FUNCTION`) — fixed, profile-independent decode-time
+  limits, never `RuntimeQuotas`-derived.
+- **Verifier rules unrelated to `RuntimeQuotas`** — e.g. definite-register-
+  assignment, ownership-path admission, capability-revision gating — none
+  of which read a `RuntimeQuotas` value at all.
+- **Capability policy** (`prom-cap` manifests/grants) — an independent
+  admission authority, orthogonal to quotas.
+- **Any other independent admission authority** this document did not
+  enumerate.
+
+`RuntimeQuotas`'s authority claim in this document is scoped exactly to
+the quota/profile dimensions it represents — nothing broader.
 
 ## 6. Custom-envelope policy — frozen
 
@@ -346,9 +379,19 @@ execution — not aspirational vocabulary.
 **The defect is precisely this document's headline claim**: two sessions
 under the identical `ExecutionContext::VerifiedLocal` label — one running
 under the canonical baseline, one running with `max_effect_calls` reduced
-to `1` — produce byte-identical `session` lines in the canonical audit
-archive. A reader of the archive alone cannot determine which envelope
-actually governed either run.
+to `1` — are recorded with an identical `session` line in the canonical
+audit archive with respect to the effective quota envelope: the archive
+contains no field, in the `session` line or anywhere else, from which a
+reader can distinguish those two quota configurations. This is a claim
+about representational provenance loss, not a claim that every byte of
+every possible archive for the two runs would be identical — differing
+quotas can, and often will, alter what actually executes (e.g. a run that
+exhausts a tightened `max_effect_calls` produces a `QuotaExceeded` event
+the baseline run never reaches), so the *event* portions of the two
+archives may legitimately diverge. What cannot diverge, today, is the
+`session` line's ability to say which envelope caused that divergence. A
+reader of the archive alone cannot determine which envelope actually
+governed either run.
 
 ## 8. "Must not weaken silently" — precise meaning, frozen
 
@@ -409,7 +452,8 @@ defect (§7) is provenance honesty, not envelope restriction. **Rejected.**
 ## 10. Candidate B — record effective envelope
 
 `ExecutionContext` remains a baseline/default/class label (§4).
-`RuntimeQuotas` remains the actual effective policy (§5). Custom envelopes
+`RuntimeQuotas` remains the actual effective authority for the
+quota/profile dimensions it represents (§5). Custom envelopes
 remain first-class (§6). `RuntimeSessionDescriptor` and
 `AuditSessionMetadata` must preserve the effective `RuntimeQuotas` that
 actually governed verification/execution; audit/replay serialization must
@@ -458,8 +502,9 @@ the archive to be able to *establish* what governed a run, not merely to
 stop *claiming* it can. Narrowing the docs alone would leave replay/audit
 permanently blind to the actual envelope even after `#1759`/`#1900`/
 `#1761`/`#1760` finally made `RuntimeQuotas` a fully truthful, enforced
-authority — a regression in what the audit trail is capable of attesting
-to, at the exact moment the underlying enforcement became trustworthy
+quota/profile authority (§5's exact, narrower scope) — a regression in
+what the audit trail is capable of attesting to, at the exact moment the
+underlying enforcement became trustworthy
 enough to be worth attesting to. **Rejected**, per the governing brief's
 own instruction not to select D unless evidence shows AC4.c requires
 less — evidence shows the opposite.
@@ -627,11 +672,20 @@ policy after the fact. Concretely:
 **RECORD_EFFECTIVE** (Candidate B, §10), with the meaning of "must not
 weaken silently" frozen as (B) (§8): explicit-in-provenance, not
 prohibited. `ExecutionContext` remains a baseline-selector/audit-class
-label (§4); `RuntimeQuotas` remains the sole effective authority (§5);
-custom envelopes remain fully permitted, unrestricted by any new
-stricter-than-baseline rule (§6); `RuntimeSessionDescriptor`/
-`AuditSessionMetadata` must record the full effective `RuntimeQuotas`
-(§15); the archive format version must bump accordingly (§16).
+label (§4); `RuntimeQuotas` remains the effective authority for the
+quota/profile dimensions it represents (§5); custom envelopes remain
+fully permitted, unrestricted by any new stricter-than-baseline rule
+(§6); `RuntimeSessionDescriptor`/`AuditSessionMetadata` must record the
+full effective `RuntimeQuotas` (§15); the archive format version must
+bump accordingly (§16).
+
+**Scope of this recording, stated explicitly:** recording `RuntimeQuotas`
+makes the effective `RuntimeQuotas` envelope truthful in provenance. It
+is not a claim that `AuditSessionMetadata` now captures every independent
+verifier/admission authority — `VerificationLimits`, `sm-format`'s
+structural caps, non-`RuntimeQuotas` verifier rules, and capability
+policy (§5) remain entirely outside this decision's scope and outside
+what the recorded `quotas` field can attest to.
 
 ## 20. Rejected alternatives
 
