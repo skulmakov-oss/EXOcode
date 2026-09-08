@@ -50,7 +50,6 @@ Frames,
 Registers,
 SymbolTable,
 EffectCalls,
-TraceEntries,
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuotaExceeded {
 pub kind: QuotaKind,
@@ -80,7 +79,7 @@ pub max_frames: usize,
 pub max_registers: usize,
 pub max_symbol_table: usize,
 pub max_effect_calls: usize,
-pub max_trace_entries: usize,
+pub max_debug_symbols_per_function: usize,
 pub const fn verified_local() -> Self {
 pub const fn pure_compute() -> Self {
 pub const fn kernel_bound() -> Self {
@@ -89,7 +88,6 @@ pub fn exceed(self, kind: QuotaKind, used: usize) -> Option<QuotaExceeded> {
 pub struct ExecutionConfig {
 pub context: ExecutionContext,
 pub quotas: RuntimeQuotas,
-pub trace_enabled: bool,
 pub const fn new(context: ExecutionContext, quotas: RuntimeQuotas) -> Self {
 pub const fn for_context(context: ExecutionContext) -> Self {
 #[cfg(any(feature = "alloc", feature = "std"))]

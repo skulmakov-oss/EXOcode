@@ -83,7 +83,6 @@ The VM consumes `ExecutionConfig`, which binds:
 
 - `ExecutionContext`
 - `RuntimeQuotas`
-- trace enablement
 
 Current execution contexts:
 

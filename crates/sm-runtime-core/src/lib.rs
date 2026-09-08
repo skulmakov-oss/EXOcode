@@ -140,7 +140,6 @@ pub enum QuotaKind {
     Registers,
     SymbolTable,
     EffectCalls,
-    TraceEntries,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,7 +175,12 @@ pub struct RuntimeQuotas {
     pub max_registers: usize,
     pub max_symbol_table: usize,
     pub max_effect_calls: usize,
-    pub max_trace_entries: usize,
+    /// Per-function debug-symbol-table admission limit, enforced by
+    /// `sm-verify::verify_function_code` against `env.debug_symbols.len()`.
+    /// Not a `QuotaKind` member: never charged by `sm-vm`, never surfaces
+    /// as `RuntimeError::QuotaExceeded`. Kept on `RuntimeQuotas` only for
+    /// compatibility with existing per-profile admission plumbing (#1760).
+    pub max_debug_symbols_per_function: usize,
 }
 
 impl RuntimeQuotas {
@@ -189,7 +193,7 @@ impl RuntimeQuotas {
             max_registers: 4_096,
             max_symbol_table: 16_384,
             max_effect_calls: 1_024,
-            max_trace_entries: 8_192,
+            max_debug_symbols_per_function: 8_192,
         }
     }
 
@@ -202,7 +206,7 @@ impl RuntimeQuotas {
             max_registers: 4_096,
             max_symbol_table: 16_384,
             max_effect_calls: 0,
-            max_trace_entries: 4_096,
+            max_debug_symbols_per_function: 4_096,
         }
     }
 
@@ -215,7 +219,7 @@ impl RuntimeQuotas {
             max_registers: 8_192,
             max_symbol_table: 16_384,
             max_effect_calls: 4_096,
-            max_trace_entries: 16_384,
+            max_debug_symbols_per_function: 16_384,
         }
     }
 
@@ -228,7 +232,6 @@ impl RuntimeQuotas {
             QuotaKind::Registers => self.max_registers,
             QuotaKind::SymbolTable => self.max_symbol_table,
             QuotaKind::EffectCalls => self.max_effect_calls,
-            QuotaKind::TraceEntries => self.max_trace_entries,
         };
         (used > limit).then_some(QuotaExceeded { kind, limit, used })
     }
@@ -244,16 +247,11 @@ impl Default for RuntimeQuotas {
 pub struct ExecutionConfig {
     pub context: ExecutionContext,
     pub quotas: RuntimeQuotas,
-    pub trace_enabled: bool,
 }
 
 impl ExecutionConfig {
     pub const fn new(context: ExecutionContext, quotas: RuntimeQuotas) -> Self {
-        Self {
-            context,
-            quotas,
-            trace_enabled: false,
-        }
+        Self { context, quotas }
     }
 
     pub const fn for_context(context: ExecutionContext) -> Self {
@@ -435,7 +433,7 @@ mod tests {
         assert_eq!(verified_local.max_registers, 4_096);
         assert_eq!(verified_local.max_symbol_table, 16_384);
         assert_eq!(verified_local.max_effect_calls, 1_024);
-        assert_eq!(verified_local.max_trace_entries, 8_192);
+        assert_eq!(verified_local.max_debug_symbols_per_function, 8_192);
 
         let pure_compute = RuntimeQuotas::pure_compute();
         assert_eq!(pure_compute.max_steps, 100_000);
@@ -445,7 +443,7 @@ mod tests {
         assert_eq!(pure_compute.max_registers, 4_096);
         assert_eq!(pure_compute.max_symbol_table, 16_384);
         assert_eq!(pure_compute.max_effect_calls, 0);
-        assert_eq!(pure_compute.max_trace_entries, 4_096);
+        assert_eq!(pure_compute.max_debug_symbols_per_function, 4_096);
 
         let kernel_bound = RuntimeQuotas::kernel_bound();
         assert_eq!(kernel_bound.max_steps, 250_000);
@@ -455,7 +453,7 @@ mod tests {
         assert_eq!(kernel_bound.max_registers, 8_192);
         assert_eq!(kernel_bound.max_symbol_table, 16_384);
         assert_eq!(kernel_bound.max_effect_calls, 4_096);
-        assert_eq!(kernel_bound.max_trace_entries, 16_384);
+        assert_eq!(kernel_bound.max_debug_symbols_per_function, 16_384);
     }
 
     #[test]

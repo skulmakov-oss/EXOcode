@@ -1356,14 +1356,14 @@ fn verify_function_code(
     let string_count = env.strings.len();
 
     let debug_symbol_count = env.debug_symbols.len();
-    if debug_symbol_count > quotas.max_trace_entries {
+    if debug_symbol_count > quotas.max_debug_symbols_per_function {
         return Err(reject_one(
             name,
             VerificationCode::ResourceLimitExceeded,
             0,
             format!(
-                "debug section uses {} entries, exceeding the trace budget of {}",
-                debug_symbol_count, quotas.max_trace_entries
+                "debug section uses {} entries, exceeding the per-function debug-symbol limit of {}",
+                debug_symbol_count, quotas.max_debug_symbols_per_function
             ),
         ));
     }
@@ -6784,6 +6784,80 @@ mod tests {
             report.diagnostics[0].message,
             "debug symbol pc points past the instruction stream"
         );
+    }
+
+    /// #1760 (FA-08-002) test helper: builds a single-function artifact with
+    /// exactly `n` genuine debug symbols, one per instruction (matching
+    /// `emit_ir_to_semcode`'s real emission - each instruction contributes
+    /// exactly one `(pc, line, col)` entry, see `legacy_lowering.rs`'s `dbg.push`
+    /// call site). The last instruction is `Ret`; every earlier instruction is
+    /// a harmless repeated `LoadI32 { dst: 0, val: 0 }`, so the fixture is a
+    /// real, fully-verifiable function - not a hand-crafted byte blob - and
+    /// every debug pc genuinely lands on a real instruction start.
+    fn build_function_with_n_debug_symbols(n: usize) -> Vec<u8> {
+        assert!(n >= 1, "fixture needs at least the trailing Ret");
+        let mut instrs: Vec<IrInstr> = (0..n - 1)
+            .map(|_| IrInstr::LoadI32 { dst: 0, val: 0 })
+            .collect();
+        instrs.push(IrInstr::Ret { src: None });
+        emit_ir_to_semcode(
+            &[IrFunction {
+                name: "main".to_string(),
+                instrs,
+                ownership_events: Vec::new(),
+                params: Vec::new(),
+            }],
+            true,
+        )
+        .expect("emit")
+    }
+
+    // #1760 (FA-08-002): the renamed `max_debug_symbols_per_function` must
+    // preserve `pure_compute`'s pre-rename behavior exactly - 4096 genuine
+    // debug symbols (one per instruction) must still admit under
+    // `pure_compute`, whose configured limit is exactly 4096.
+    #[test]
+    fn verify_semcode_token_with_quotas_accepts_pure_compute_at_exactly_4096_debug_symbols() {
+        let bytes = build_function_with_n_debug_symbols(4_096);
+        let (_, functions) =
+            sm_format::semcode_decode::decode_semcode_envelope(&bytes).expect("decode");
+        assert_eq!(functions[0].debug_symbols.len(), 4_096);
+        verify_semcode_token_with_quotas(&bytes, RuntimeQuotas::pure_compute())
+            .expect("exactly 4096 debug symbols must be admitted under pure_compute's own limit");
+    }
+
+    // #1760 (FA-08-002): the adversarial proof this checkpoint exists for.
+    // 4097 debug symbols is within `sm-format`'s independent, unrelated fixed
+    // decode-time cap (`MAX_DEBUG_SYMBOLS_PER_FUNCTION = 8192`), so this
+    // artifact decodes cleanly - the rejection must come from `sm-verify`'s
+    // own `pure_compute`-configured limit (4096), proving the rename did not
+    // silently widen `pure_compute`'s admission to the decoder's 8192 cap.
+    #[test]
+    fn verify_semcode_token_with_quotas_rejects_pure_compute_at_4097_debug_symbols() {
+        let bytes = build_function_with_n_debug_symbols(4_097);
+        let report = verify_semcode_token_with_quotas(&bytes, RuntimeQuotas::pure_compute())
+            .expect_err("4097 debug symbols must exceed pure_compute's 4096 limit");
+        assert_eq!(
+            report.diagnostics[0].code,
+            VerificationCode::ResourceLimitExceeded
+        );
+        assert_eq!(
+            report.diagnostics[0].message,
+            "debug section uses 4097 entries, exceeding the per-function debug-symbol limit of 4096"
+        );
+    }
+
+    // #1760 (FA-08-002): the same 4097-debug-symbol artifact that
+    // `pure_compute` rejects must remain accepted under `verified_local`
+    // (limit 8192) - this is the "dead code for verified_local/kernel_bound"
+    // half of the decision's falsification: the check only has real
+    // authority for `pure_compute`, whose 4096 is stricter than `sm-format`'s
+    // fixed 8192 decode-time cap.
+    #[test]
+    fn verify_semcode_token_with_quotas_verified_local_accepts_4097_debug_symbols() {
+        let bytes = build_function_with_n_debug_symbols(4_097);
+        verify_semcode_token_with_quotas(&bytes, RuntimeQuotas::verified_local())
+            .expect("4097 debug symbols must remain accepted under verified_local's 8192 limit");
     }
 
     // #1731 regression matrix (7/8): a truncated DBG0 tag or count must
