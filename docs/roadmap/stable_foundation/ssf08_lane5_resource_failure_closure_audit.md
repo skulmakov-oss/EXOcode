@@ -239,17 +239,24 @@ fixed `MAX_DEBUG_SYMBOLS_PER_FUNCTION = 8192`), but genuinely live for
 `pure_compute` (`max_trace_entries = 4096`, stricter than 8192). This
 field is therefore not inert vocabulary the way `ConstPool` was; it is a
 real, mislabeled, profile-inconsistent debug-symbol bound. The decision
-document freezes: `trace_enabled` → REMOVE; `QuotaKind::TraceEntries` (the
-execution-trace taxonomy member) → REMOVE; `max_trace_entries` → RE-SCOPE
-(rename to something like `max_debug_symbols_per_function`, preserving its
-current real behavior exactly) rather than bare deletion, with a
-documented, not-yet-authorized alternative (delete outright, disclosing
-the resulting loosening of `pure_compute`'s bound) recorded for a future,
-separate decision. **This is a contract decision only. `#1760` remains
-OPEN. No field, variant, baseline value, or golden snapshot was touched by
-this update - AC4.b remains not satisfied for `TraceEntries`/
-`trace_enabled` until a separately authorized implementation checkpoint
-lands.**
+document freezes, with the exact rename mechanic itself now decided (not
+left open): `trace_enabled` → REMOVE; `QuotaKind::TraceEntries` (the
+execution-trace taxonomy member) → REMOVE; `RuntimeQuotas::max_trace_entries`
+→ RENAME to `RuntimeQuotas::max_debug_symbols_per_function`, preserving
+its exact current values (8192/4096/16384) and the exact existing
+`sm-verify` check byte-for-byte in behavior - explicitly **not** an
+execution-trace quota, not represented in `QuotaKind`, not charged by
+`sm-vm`, never `RuntimeError::QuotaExceeded`. The alternative (delete the
+check outright, relying solely on `sm-format`'s fixed
+`MAX_DEBUG_SYMBOLS_PER_FUNCTION = 8192`) is **explicitly rejected** by the
+decision document, not merely deferred - it would loosen `pure_compute`'s
+admission from 4096 to 8192 debug symbols per function, an undisclosed
+admission-policy change this checkpoint has no authority to make. **This
+is a contract decision only. `#1760` remains OPEN. No field, variant,
+baseline value, or golden snapshot was touched by this update - AC4.b
+remains not satisfied for `TraceEntries`/`trace_enabled` until a
+separately authorized implementation checkpoint executes this
+now-complete mechanic.**
 
 ## 5. #1761 — `ConstPool` quota
 
