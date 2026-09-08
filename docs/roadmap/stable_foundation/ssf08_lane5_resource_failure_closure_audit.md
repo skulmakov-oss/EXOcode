@@ -444,6 +444,32 @@ by omission about *enforcement*.
 implementation) choosing among VALIDATE/RECORD/NARROW CLAIM/a documented
 combination, informed by #1759's outcome.
 
+**Decision update (contract frozen, no implementation):** `#1759` (and
+`#1900`/`#1761`/`#1760`, all closed since this section was first written)
+have settled the dependency this section itself named as a precondition -
+`RuntimeQuotas` is now a fully truthful, fully enforced authority, not
+aspirational vocabulary, so a RECORD-style repair can proceed without risk
+of recording configuration that governs nothing. The VALIDATE/RECORD/
+NARROW-CLAIM question is now decided in
+`docs/roadmap/stable_foundation/ssf08_1762_execution_envelope_provenance_decision.md`:
+**RECORD_EFFECTIVE** (the RECORD option named above), not VALIDATE and not
+NARROW CLAIM. `ExecutionContext` is frozen as a baseline-selector/
+audit-class label (confirming this section's own "(C) descriptive
+execution class only" reading); `RuntimeQuotas` is frozen as the sole
+effective authority; the existing `ssf04_effect_quota.rs` custom-envelope
+seam remains fully legitimate and unrestricted, per the decision's own
+falsification of a "stricter than baseline only" restriction as
+unauthorized, ill-posed new scope. `docs/spec/quotas.md`'s "must not
+weaken the core safety contract silently" is frozen to mean: custom
+envelopes are permitted, but must be explicitly visible in provenance -
+never hidden. The exact future mechanic (fields, copy path, archive wire
+format, version bump discipline, public API impact) is fully frozen in
+that document's own §15-§24 - a fully-specified mechanic, not an open
+choice. **This is a contract decision only. `#1762` remains OPEN. No
+field, struct, archive format constant, or golden snapshot was touched by
+this update - AC4.c remains not satisfied until a separately authorized
+implementation checkpoint executes this now-complete mechanic.**
+
 ## 7. #1763 — `RuntimeTrap` / `RuntimeError` taxonomy
 
 **Fresh trace, exhaustive, not sampled.** `RuntimeTrap` (13 variants):
@@ -866,7 +892,11 @@ target contract for over-strengthening:
 - **AC4.c** — `ExecutionContext`/provenance does not overstate the quota
   envelope that actually governed execution. *(Not satisfied: `prom-runtime`/
   `prom-audit` record only the context label, and nothing validates
-  context/quota consistency at construction.)*
+  context/quota consistency at construction. Disposition now frozen -
+  RECORD_EFFECTIVE, see
+  `docs/roadmap/stable_foundation/ssf08_1762_execution_envelope_provenance_decision.md` -
+  but not yet implemented; the exact mechanic (fields, copy path, archive
+  wire/version bump) is fully specified, not an open choice.)*
 - **AC4.d** — Verification rejection, runtime quota exhaustion, semantic
   trap, capability denial, and host/ABI failure have an explicit,
   deterministic taxonomy that matches what production code actually
