@@ -2,7 +2,8 @@
 
 Status: draft v0
 Model owner: `sm-runtime-core`
-Enforcement owner: `sm-vm`
+Enforcement owner: `sm-vm` (runtime-resident quotas); `sm-verify`
+(`SymbolTable`, checked statically at admission - see "Ownership Rule")
 
 ## Purpose
 
@@ -11,7 +12,8 @@ Runtime quotas define the bounded execution contract for Semantic programs.
 Quota model rule:
 
 - `sm-runtime-core` defines quota taxonomy and baseline profiles
-- `sm-vm` enforces quotas during execution
+- `sm-vm` enforces quotas during execution, except `SymbolTable`, which
+  `sm-verify` enforces statically, pre-execution, at admission
 - higher integration layers may choose context-specific quota envelopes, but
   must not weaken the core safety contract silently
 
@@ -24,7 +26,6 @@ Current quota kinds:
 - `StackDepth`
 - `Frames`
 - `Registers`
-- `ConstPool`
 - `SymbolTable`
 - `EffectCalls`
 - `TraceEntries`
@@ -36,7 +37,6 @@ Current quota descriptor fields:
 - `max_stack_depth`
 - `max_frames`
 - `max_registers`
-- `max_const_pool`
 - `max_symbol_table`
 - `max_effect_calls`
 - `max_trace_entries`
@@ -50,7 +50,6 @@ Current quota descriptor fields:
 - `max_stack_depth = 256`
 - `max_frames = 256`
 - `max_registers = 4096`
-- `max_const_pool = 65536`
 - `max_symbol_table = 16384`
 - `max_effect_calls = 1024`
 - `max_trace_entries = 8192`
@@ -62,7 +61,6 @@ Current quota descriptor fields:
 - `max_stack_depth = 256`
 - `max_frames = 256`
 - `max_registers = 4096`
-- `max_const_pool = 65536`
 - `max_symbol_table = 16384`
 - `max_effect_calls = 0`
 - `max_trace_entries = 4096`
@@ -74,7 +72,6 @@ Current quota descriptor fields:
 - `max_stack_depth = 256`
 - `max_frames = 256`
 - `max_registers = 8192`
-- `max_const_pool = 65536`
 - `max_symbol_table = 16384`
 - `max_effect_calls = 4096`
 - `max_trace_entries = 16384`
@@ -144,7 +141,8 @@ The VM must not:
 The following ownership split is mandatory:
 
 - quota taxonomy: `sm-runtime-core`
-- quota enforcement: `sm-vm`
+- quota enforcement: `sm-vm`, except `SymbolTable`, which `sm-verify`
+  enforces statically at admission, before execution begins
 - session-level quota selection: higher orchestration layers
 
 ## Version Review Rule

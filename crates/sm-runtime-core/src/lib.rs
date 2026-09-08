@@ -138,7 +138,6 @@ pub enum QuotaKind {
     StackDepth,
     Frames,
     Registers,
-    ConstPool,
     SymbolTable,
     EffectCalls,
     TraceEntries,
@@ -175,7 +174,6 @@ pub struct RuntimeQuotas {
     pub max_stack_depth: usize,
     pub max_frames: usize,
     pub max_registers: usize,
-    pub max_const_pool: usize,
     pub max_symbol_table: usize,
     pub max_effect_calls: usize,
     pub max_trace_entries: usize,
@@ -189,7 +187,6 @@ impl RuntimeQuotas {
             max_stack_depth: 256,
             max_frames: 256,
             max_registers: 4_096,
-            max_const_pool: 65_536,
             max_symbol_table: 16_384,
             max_effect_calls: 1_024,
             max_trace_entries: 8_192,
@@ -203,7 +200,6 @@ impl RuntimeQuotas {
             max_stack_depth: 256,
             max_frames: 256,
             max_registers: 4_096,
-            max_const_pool: 65_536,
             max_symbol_table: 16_384,
             max_effect_calls: 0,
             max_trace_entries: 4_096,
@@ -217,7 +213,6 @@ impl RuntimeQuotas {
             max_stack_depth: 256,
             max_frames: 256,
             max_registers: 8_192,
-            max_const_pool: 65_536,
             max_symbol_table: 16_384,
             max_effect_calls: 4_096,
             max_trace_entries: 16_384,
@@ -231,7 +226,6 @@ impl RuntimeQuotas {
             QuotaKind::StackDepth => self.max_stack_depth,
             QuotaKind::Frames => self.max_frames,
             QuotaKind::Registers => self.max_registers,
-            QuotaKind::ConstPool => self.max_const_pool,
             QuotaKind::SymbolTable => self.max_symbol_table,
             QuotaKind::EffectCalls => self.max_effect_calls,
             QuotaKind::TraceEntries => self.max_trace_entries,
@@ -424,6 +418,44 @@ mod tests {
         let quotas = RuntimeQuotas::verified_local();
         assert_eq!(quotas.max_stack_depth, 256);
         assert_eq!(quotas.max_effect_calls, 1_024);
+    }
+
+    /// #1761 (FA-08-003): removing `max_const_pool`/`QuotaKind::ConstPool`
+    /// must not change any surviving quota value in any baseline profile.
+    /// Pins every remaining field of all three profiles to its exact
+    /// pre-removal value, so an accidental baseline change hiding inside
+    /// this removal would fail loudly here rather than pass silently.
+    #[test]
+    fn removing_const_pool_leaves_every_surviving_baseline_value_unchanged() {
+        let verified_local = RuntimeQuotas::verified_local();
+        assert_eq!(verified_local.max_steps, 100_000);
+        assert_eq!(verified_local.max_calls, 16_384);
+        assert_eq!(verified_local.max_stack_depth, 256);
+        assert_eq!(verified_local.max_frames, 256);
+        assert_eq!(verified_local.max_registers, 4_096);
+        assert_eq!(verified_local.max_symbol_table, 16_384);
+        assert_eq!(verified_local.max_effect_calls, 1_024);
+        assert_eq!(verified_local.max_trace_entries, 8_192);
+
+        let pure_compute = RuntimeQuotas::pure_compute();
+        assert_eq!(pure_compute.max_steps, 100_000);
+        assert_eq!(pure_compute.max_calls, 16_384);
+        assert_eq!(pure_compute.max_stack_depth, 256);
+        assert_eq!(pure_compute.max_frames, 256);
+        assert_eq!(pure_compute.max_registers, 4_096);
+        assert_eq!(pure_compute.max_symbol_table, 16_384);
+        assert_eq!(pure_compute.max_effect_calls, 0);
+        assert_eq!(pure_compute.max_trace_entries, 4_096);
+
+        let kernel_bound = RuntimeQuotas::kernel_bound();
+        assert_eq!(kernel_bound.max_steps, 250_000);
+        assert_eq!(kernel_bound.max_calls, 32_768);
+        assert_eq!(kernel_bound.max_stack_depth, 256);
+        assert_eq!(kernel_bound.max_frames, 256);
+        assert_eq!(kernel_bound.max_registers, 8_192);
+        assert_eq!(kernel_bound.max_symbol_table, 16_384);
+        assert_eq!(kernel_bound.max_effect_calls, 4_096);
+        assert_eq!(kernel_bound.max_trace_entries, 16_384);
     }
 
     #[test]

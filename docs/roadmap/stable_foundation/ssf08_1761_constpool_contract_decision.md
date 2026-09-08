@@ -341,3 +341,39 @@ mark `#1761` repaired or closed, does not delete `max_const_pool` or
 touch `#1760`/`#1762`/`#1763`.
 
 **Wait for explicit owner GO before implementation.**
+
+---
+
+## Implementation update
+
+REMOVE landed. `QuotaKind::ConstPool` and `RuntimeQuotas::max_const_pool`
+were removed from `crates/sm-runtime-core/src/lib.rs` (the enum variant,
+the struct field, all three baseline-profile assignments, and the
+`RuntimeQuotas::exceed()` match arm), from the public API golden snapshot
+(`tests/golden_snapshots/public_api/sm_runtime_core_lib.txt`), and from
+the active specification (`docs/spec/quotas.md`'s taxonomy, descriptor
+field list, and all three baseline-profile sections).
+
+`cargo check --workspace --all-targets` immediately after the Rust removal
+produced **zero** compile errors anywhere in the workspace - empirically
+confirming, not merely inferring, that `ConstPool` had no live downstream
+consumer of any kind (§1's fresh sweep already predicted this; this is the
+falsification the "STOP if an unexpected consumer appears" rule in the
+implementation brief existed to catch, and it did not fire). The public
+API guard's own falsification proof was run as specified: with the Rust
+surface already removed but the golden snapshot still stale, the guard
+failed RED, and its own diff showed the change was precisely `ConstPool,`
+and `pub max_const_pool: usize,` disappearing - nothing else. The golden
+was then regenerated via the repository's existing
+`SM_UPDATE_PUBLIC_API_SNAPSHOTS=1` mechanism, and the resulting diff was
+reviewed manually: exactly those same two lines removed, nothing else. A
+temporary reinsertion of the enum variant (reverted immediately after)
+confirmed the same guard also catches `ConstPool`'s return, not just its
+departure.
+
+No compatibility ghost was introduced: no replacement field, no re-scope
+to `SymbolTable`/string-table limits/`SIG0`, no deprecated alias.
+
+This addendum records the implementation outcome. The evidence,
+falsification analysis, and rejected-alternatives record above remain
+unedited as the historical record of why REMOVE was selected.

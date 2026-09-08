@@ -302,6 +302,25 @@ remains OPEN. No field, variant, baseline value, or golden snapshot was
 touched by this update - AC4.b remains not satisfied for `ConstPool` until
 a separately authorized implementation checkpoint lands.**
 
+**Implementation update: REMOVE implemented.** `QuotaKind::ConstPool` and
+`RuntimeQuotas::max_const_pool` are removed from
+`crates/sm-runtime-core/src/lib.rs` (enum variant, struct field, all three
+baseline-profile assignments, the `exceed()` match arm), from
+`tests/golden_snapshots/public_api/sm_runtime_core_lib.txt` (via the
+explicit `SM_UPDATE_PUBLIC_API_SNAPSHOTS=1` mechanism, reviewed manually -
+exactly those two lines, nothing else), and from `docs/spec/quotas.md`'s
+active taxonomy, descriptor-field list, and all three baseline-profile
+sections. `cargo check --workspace --all-targets` immediately after the
+Rust removal produced zero compile errors anywhere - empirical
+confirmation, not inference, that `ConstPool` had no live downstream
+consumer. `ConstPool` is no longer a current `RuntimeQuotas`/`QuotaKind`
+member; §10's inventory below reflects this as a resolved, historical
+entry rather than a live row. **`#1761` remains OPEN pending closure by
+its own implementation PR** (this repository update does not itself close
+issues). **AC4.b is no longer blocked by `ConstPool`** - it remains **NOT
+SATISFIED globally**, since `TraceEntries`/`#1760` still presents an
+inert/deferred resource as an enforced quota kind.
+
 ## 6. #1762 — `ExecutionContext` / quota identity
 
 **Fresh trace.** `ExecutionConfig::new(context, quotas)` (line 257) performs
@@ -513,9 +532,12 @@ the five filed issues rather than silently expanding implementation scope:
 3. **`SymbolTable` is a `RuntimeQuotas`-sourced quota kind enforced at the
    *verifier* layer, not the VM**, contradicting `docs/spec/quotas.md`'s own
    blanket "Enforcement owner: `sm-vm`" ownership statement — see §12. This
-   is not a safety gap (the quota genuinely is enforced, just not by the
-   crate the spec names), but it is a documentation-precision gap worth
-   fixing alongside whatever else touches `quotas.md`.
+   was not a safety gap (the quota genuinely is enforced, just not by the
+   crate the spec named), but it was a documentation-precision gap.
+   **Corrected** in #1761's implementation PR: `quotas.md`'s header,
+   "Quota model rule," and "Ownership Rule" sections now name `sm-verify`'s
+   static, pre-execution enforcement of `SymbolTable` explicitly, since
+   that PR was already the authoritative edit point for this exact file.
 4. **`EffectCalls` — an already-ACTIVE, already-enforced runtime quota — uses
    unchecked `vm.effect_calls + 1` in `bump_effect_calls`, which wraps
    silently (rather than erroring) in a release build if the counter is ever
@@ -664,15 +686,31 @@ specifically and only on `#1759`, as stated in §6.
 | `StackDepth` | `max_stack_depth` | 256/256/256 | Effective stack depth | `sm-vm` (`push_frame`) | frame push | `RuntimeError::StackOverflow` (compat: surfaced as `StackOverflow`, not `QuotaExceeded`, per `quotas.md`'s own documented compatibility note) | yes | yes (existing suite) | `quotas.md` | **ACTIVE** |
 | `Registers` | `max_registers` | 4096/4096/8192 | Register vector growth | `sm-vm` (frame init + growth) | register write | `RuntimeError::QuotaExceeded` | yes | yes (existing suite) | `quotas.md` | **ACTIVE** |
 | `EffectCalls` | `max_effect_calls` | 1024/0/4096 | Effect-opcode invocation count | `sm-vm`, two independent sites: `bump_effect_calls(vm)` (Gate/Pulse/State/Event/Clock) and `ApplicationVmHost::bump_effect_calls` (application builtins) | effect opcode / builtin dispatch | `RuntimeError::QuotaExceeded` | yes | yes (existing suite + #1900 numeric-ceiling suite, both sites) | `quotas.md` | **ACTIVE; both production charge paths overflow-safe, numeric-ceiling fail-closed, qualified** (§8 findings 4 and 6 - both repaired by #1900) |
-| `SymbolTable` | `max_symbol_table` | 16384 (all profiles) | Program-wide unique runtime symbol count | **`sm-verify`** (not `sm-vm` - see §12) | pre-execution, at admission | verifier `RejectReport` | yes | yes (#1820 suite) | `quotas.md` (ownership line inaccurate, §8) | **ACTIVE, wrong layer documented** |
+| `SymbolTable` | `max_symbol_table` | 16384 (all profiles) | Program-wide unique runtime symbol count | **`sm-verify`** (not `sm-vm` - see §12) | pre-execution, at admission | verifier `RejectReport` | yes | yes (#1820 suite) | `quotas.md` (ownership line corrected by #1761's implementation PR - see below) | **ACTIVE, correctly documented** |
 | `Steps` | `max_steps` | 100000/100000/250000 | Opcode-dispatch fuel counter | `sm-vm` (`exec_loop_with_profile`) | opcode decode succeeds | `RuntimeError::QuotaExceeded` | yes | yes (incl. backward-loop regression) | `quotas.md`, `vm.md` | **ACTIVE** (#1759, implemented, checked-add overflow discipline) |
 | `Calls` | `max_calls` | 16384/16384/32768 | Admitted non-root Semantic invocation count | `sm-vm` (`push_frame`) | frame push, root-exempt | `RuntimeError::QuotaExceeded` | yes | yes (incl. root-exemption + boundary suite) | `quotas.md`, `vm.md` | **ACTIVE** (#1759, implemented, checked-add overflow discipline) |
-| `ConstPool` | `max_const_pool` | 65536 (all profiles) | *none - no referent concept exists* | *none* | *none* | *none* | no | no | `quotas.md` | **INERT, no referent, REMOVE disposition frozen, not yet implemented** (#1761) |
 | `TraceEntries` | `max_trace_entries` | 8192/4096/16384 | *none* | *none* | *none* | *none* | no | no | `quotas.md` | **INERT** (#1760) |
 
-Every `QuotaKind` variant is accounted for above; no sixth inert kind was
-found beyond the four already filed (`Steps`, `Calls`, `ConstPool`,
-`TraceEntries`).
+`ConstPool`/`max_const_pool` is intentionally **no longer a row above** -
+it is not a current `RuntimeQuotas`/`QuotaKind` member. #1761's REMOVE
+disposition (frozen by
+`docs/roadmap/stable_foundation/ssf08_1761_constpool_contract_decision.md`)
+has been implemented: the enum variant, the struct field, all three
+baseline-profile assignments, the `exceed()` match arm, the public API
+golden snapshot entries, and the active `docs/spec/quotas.md` references
+are all removed. It remains solely as historical record in the decision
+document and in §5 above - a resolved entry, not a live quota.
+`docs/spec/quotas.md`'s own enforcement-owner text (previously overstating
+that all quota enforcement belongs to `sm-vm`) was also narrowed in the
+same PR to name `sm-verify`'s static enforcement of `SymbolTable`
+explicitly, since that PR was already the authoritative edit point for
+this exact file and the discrepancy (§8 finding 3) was already proven.
+
+Every `QuotaKind` variant is accounted for above; at audit time four
+inert kinds were found (`Steps`, `Calls`, `ConstPool`, `TraceEntries`) -
+`Steps`/`Calls` are now `ACTIVE` (#1759) and `ConstPool` is now removed
+entirely (#1761); only `TraceEntries` (#1760) remains inert and
+undecided.
 
 ## 11. Verifier limits vs runtime quotas (architecture check)
 
@@ -725,13 +763,13 @@ target contract for over-strengthening:
   `ApplicationVmHost::bump_effect_calls` (application builtins), are now
   fail-closed at the numeric ceiling - §8 findings 4 and 6.)*
 - **AC4.b** — Inert/deferred resource concepts are not presented as
-  enforced runtime quotas. *(Not satisfied: `ConstPool` and, pending its
-  own decision, `TraceEntries` are still presented as enforced quota kinds
-  in `docs/spec/quotas.md` today. `ConstPool`'s REMOVE disposition is now
-  frozen - see
-  `docs/roadmap/stable_foundation/ssf08_1761_constpool_contract_decision.md`
-  - but not yet implemented; AC4.b remains not satisfied until that
-  removal actually lands.)*
+  enforced runtime quotas. *(Partially satisfied: `ConstPool`'s REMOVE
+  disposition (see
+  `docs/roadmap/stable_foundation/ssf08_1761_constpool_contract_decision.md`)
+  has landed - it is no longer presented as a quota kind anywhere in
+  production code, the public API, or `docs/spec/quotas.md`. Not satisfied
+  globally: `TraceEntries`, pending its own `#1760` decision, is still
+  presented as an enforced quota kind in `docs/spec/quotas.md` today.)*
 - **AC4.c** — `ExecutionContext`/provenance does not overstate the quota
   envelope that actually governed execution. *(Not satisfied: `prom-runtime`/
   `prom-audit` record only the context label, and nothing validates
