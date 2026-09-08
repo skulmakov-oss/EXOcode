@@ -447,17 +447,22 @@ combination, informed by #1759's outcome.
 **Decision update (contract frozen, no implementation):** `#1759` (and
 `#1900`/`#1761`/`#1760`, all closed since this section was first written)
 have settled the dependency this section itself named as a precondition -
-`RuntimeQuotas` is now a fully truthful, fully enforced authority, not
-aspirational vocabulary, so a RECORD-style repair can proceed without risk
-of recording configuration that governs nothing. The VALIDATE/RECORD/
-NARROW-CLAIM question is now decided in
+`RuntimeQuotas` is now a fully truthful, fully enforced quota/profile
+authority (scoped exactly to the dimensions it represents - `sm-vm`
+runtime-quota charging plus the `sm-verify` checks that explicitly consume
+it; it does not subsume `VerificationLimits`, `sm-format`'s structural
+caps, unrelated verifier rules, or capability policy - see the decision
+document's own §5), not aspirational vocabulary, so a RECORD-style repair
+can proceed without risk of recording configuration that governs nothing.
+The VALIDATE/RECORD/NARROW-CLAIM question is now decided in
 `docs/roadmap/stable_foundation/ssf08_1762_execution_envelope_provenance_decision.md`:
 **RECORD_EFFECTIVE** (the RECORD option named above), not VALIDATE and not
 NARROW CLAIM. `ExecutionContext` is frozen as a baseline-selector/
 audit-class label (confirming this section's own "(C) descriptive
-execution class only" reading); `RuntimeQuotas` is frozen as the sole
-effective authority; the existing `ssf04_effect_quota.rs` custom-envelope
-seam remains fully legitimate and unrestricted, per the decision's own
+execution class only" reading); `RuntimeQuotas` is frozen as the
+effective authority for that same, narrower quota/profile scope; the
+existing `ssf04_effect_quota.rs` custom-envelope seam remains fully
+legitimate and unrestricted, per the decision's own
 falsification of a "stricter than baseline only" restriction as
 unauthorized, ill-posed new scope. `docs/spec/quotas.md`'s "must not
 weaken the core safety contract silently" is frozen to mean: custom
