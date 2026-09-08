@@ -195,50 +195,79 @@ would be forcing the original hypothesis through past contrary evidence,
 exactly what this checkpoint's own falsification discipline exists to
 prevent.
 
-## 5. SPLIT — the selected disposition
+## 5. SPLIT — the selected disposition (FROZEN, mechanic included)
 
 - **`ExecutionConfig::trace_enabled` → REMOVE.** Zero readers, zero
   authority, no compatibility bridge needed.
 - **`QuotaKind::TraceEntries` (the execution-trace taxonomy member) →
   REMOVE.** Zero enforcement, zero authority, exactly the `ConstPool`
   pattern.
-- **`RuntimeQuotas::max_trace_entries` (the field, and the real check that
-  reads it) → RE-SCOPE, not bare deletion.** The field's *current, real,
-  already-shipped* behavior (a per-function debug-symbol-count structural
-  cap, live specifically for `pure_compute`) must be preserved exactly
-  unless a separate, explicit decision authorizes loosening it - deleting
-  it as a side effect of "removing inert trace vocabulary" would be an
-  undisclosed behavior change smuggled inside a false-readiness cleanup,
-  which is the opposite of what Lane 5 exists to do.
+- **`RuntimeQuotas::max_trace_entries` → RENAME/RE-SCOPE to
+  `RuntimeQuotas::max_debug_symbols_per_function`. This mechanic is
+  FROZEN, not left open.** The field's *current, real, already-shipped*
+  behavior (a per-function debug-symbol-count structural cap, live
+  specifically for `pure_compute`) is preserved exactly - same three
+  values, same verifier check, same error path - with only the misleading
+  name and `QuotaKind` taxonomy membership corrected.
 
-Two concrete re-scope mechanics are recorded here for the future
-implementation checkpoint to choose between - this document does not
-select between them, since that is a distinct, narrower decision about a
-real debug-symbol resource, not about the trace contract this checkpoint
-was chartered to decide:
+**Owner decision, closing what an earlier draft of this document left as
+two undecided mechanics:** Option 1 (rename in place) is selected.
+Option 2 (delete entirely, relying solely on `sm-format`'s fixed
+`MAX_DEBUG_SYMBOLS_PER_FUNCTION = 8192`) is **explicitly rejected for this
+checkpoint** - not merely deprioritized. Deleting the check would loosen
+`pure_compute`'s admission from 4096 to 8192 debug symbols per function,
+a real, disclosed admission-policy change for which no positive
+authorization exists today. The safe, decision-scope-respecting side is to
+preserve existing semantics exactly; a future, separate, explicitly-scoped
+decision may revisit whether `pure_compute`'s extra tightening is worth
+keeping, but this checkpoint does not pre-empt that question by silently
+loosening admission as a side effect of a vocabulary cleanup.
 
-1. **Rename in place**, e.g. `RuntimeQuotas::max_debug_symbols_per_function`,
-   removed from `QuotaKind`'s taxonomy (since it is not a `RuntimeQuotas`-
-   governed dynamic resource in the same sense as `Steps`/`Calls`/etc. -
-   it is a static, decode-adjacent structural bound, more naturally a
-   `sm-format`/`sm-verify`-owned constant than a `RuntimeQuotas` field) and
-   kept as a plain per-profile `usize` with its three current values
-   (8192/4096/16384) unchanged, preserving today's exact behavior
-   (including `pure_compute`'s tighter bound) with only the misleading name
-   and taxonomy membership corrected.
-2. **Delete entirely**, relying solely on `sm-format`'s fixed
-   `MAX_DEBUG_SYMBOLS_PER_FUNCTION = 8192` - an intentional, disclosed
-   loosening of `pure_compute`'s debug-symbol bound from 4096 to 8192,
-   requiring its own explicit sign-off as a real behavior change, not
-   bundled into this trace-vocabulary cleanup.
+**Exact frozen mechanic:**
 
-This document's own recommendation, offered but not frozen as binding:
-option 1 (rename in place) is the safer default - it achieves everything
-`#1760` set out to fix (no more false "trace" framing, no more
-`QuotaKind::TraceEntries`/`ExecutionConfig::trace_enabled` false-readiness)
-while changing zero observable behavior for any existing caller, deferring
-the separate, smaller question of whether `pure_compute`'s extra
-tightening is worth keeping to its own explicit, later decision.
+```
+RuntimeQuotas::max_trace_entries
+    → RuntimeQuotas::max_debug_symbols_per_function
+
+Preserve exact existing values:
+    verified_local = 8192
+    pure_compute   = 4096
+    kernel_bound   = 16384
+
+Preserve exact verifier admission behavior:
+    sm-verify::verify_function_code's existing check
+    (debug_symbol_count > configured limit
+     -> VerificationCode::ResourceLimitExceeded)
+    continues unchanged, reading the renamed field.
+```
+
+**`max_debug_symbols_per_function` is explicitly NOT an execution-trace
+quota.** It is:
+
+- NOT represented in `QuotaKind`
+- NOT charged by `sm-vm`
+- NOT reported via `RuntimeError::QuotaExceeded`
+- a **verifier-side artifact-admission / debug-metadata limit**, enforced
+  by `sm-verify`, whose per-profile values are carried in `RuntimeQuotas`
+  for compatibility with the existing admission-profile plumbing - not
+  because it is architecturally a runtime execution quota.
+
+**Placement is intentionally minimal for `#1760`.** This checkpoint does
+**not** move the field into `VerificationLimits` (`sm-verify`'s own
+static-analysis-budget struct, used today for `max_work_units`/
+`max_state_words`) even though that would be a more architecturally
+consistent home for a verifier-owned, decode-adjacent limit. Doing so
+would require redesigning the profile-mapping plumbing between
+`ExecutionContext`, `RuntimeQuotas`, and verifier-owned limits - a broader
+redesign this trace-contract closure does not need to force. That ownership
+cleanup, if ever wanted, is a separate, later, explicitly-scoped decision,
+not a precondition for closing `#1760`'s false trace-contract claim.
+
+This resolves the apparent tension a reviewer correctly caught: a contract
+cannot be simultaneously "frozen" and "implementation-ready" while a real
+mechanic remains open. It no longer does - the mechanic above is the
+complete, exact specification a future implementation checkpoint executes
+without further design choices.
 
 ## 6. RESERVED/DEPRECATED — rejected
 
@@ -311,15 +340,15 @@ checkpoint did.
 If `trace_enabled`/`QuotaKind::TraceEntries` are removed, no profile value
 changes at all for those two symbols (they have no per-field numeric
 representation beyond the boolean default and the taxonomy slot). For
-`max_trace_entries`, **the numbers currently bound something real** (§1.3)
-- unlike `ConstPool`'s baseline values, these are not inert vocabulary
-being deleted; they are the actual current behavior of a real, if
-mislabeled and profile-inconsistent, check. The future implementation
-checkpoint must not change `verified_local = 8192`, `pure_compute = 4096`,
-or `kernel_bound = 16384` unless it is deliberately choosing option 2 in
-§5 (delete-and-loosen), and if so must record that as an explicit,
-disclosed baseline-value change under `docs/spec/quotas.md`'s own
-"Version Review Rule" - not as a side effect of vocabulary cleanup.
+`max_trace_entries`/`max_debug_symbols_per_function`, **the numbers
+currently bound something real** (§1.3) - unlike `ConstPool`'s baseline
+values, these are not inert vocabulary being deleted; they are the actual
+current behavior of a real, if previously mislabeled, check, and §5 froze
+their preservation exactly. **The future implementation checkpoint must
+not change `verified_local = 8192`, `pure_compute = 4096`, or
+`kernel_bound = 16384`.** Option 2 (delete-and-loosen) is rejected by this
+document (§5) - it is not an implementation choice left open, and
+executing it would itself be a scope violation of this decision.
 
 ## 10. `ExecutionConfig` consequence
 
@@ -351,12 +380,14 @@ modify `RuntimeTrap` or `RuntimeError`.
 **Decision frozen ≠ AC4.b satisfied.** AC4.b ("inert/deferred resource
 concepts are not presented as enforced runtime quotas") remains **NOT
 SATISFIED** until a future, separately-authorized implementation
-checkpoint actually removes `trace_enabled`/`TraceEntries` and resolves
-`max_trace_entries` per §5. Once that implementation lands - and assuming
-no further inert quota kind is discovered in the process (this document
-makes no such claim; the `max_trace_entries` finding in §1.3 is itself
-proof that "assumed inert" requires verification, not assumption) - AC4.b
-becomes satisfiable, pending confirmation at that time.
+checkpoint actually removes `trace_enabled`/`TraceEntries` and executes
+the frozen `max_trace_entries` → `max_debug_symbols_per_function` rename
+per §5 - a fully-specified mechanic at this point, not an open choice.
+Once that implementation lands - and assuming no further inert quota kind
+is discovered in the process (this document makes no such claim; the
+`max_trace_entries` finding in §1.3 is itself proof that "assumed inert"
+requires verification, not assumption) - AC4.b becomes satisfiable,
+pending confirmation at that time.
 
 ## 13. Effect on Lane 5
 
