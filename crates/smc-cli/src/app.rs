@@ -2809,8 +2809,17 @@ fn collect_controlled_observation_envelope(
         ));
     };
 
+    // `run_semcode_collecting_hello_observations` internally executes under
+    // `ExecutionConfig::for_context(ExecutionContext::VerifiedLocal)` (see
+    // its own definition) but does not surface that config to this caller.
+    // Constructing the same canonical config here - rather than hardcoding
+    // the context and a separately-derived `RuntimeQuotas` value - records
+    // the effective envelope that actually governs that call, not a
+    // reconstruction of it (#1762).
+    let execution_config = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
     let mut audit_trail = AuditTrail::new(AuditSessionMetadata {
-        context: ExecutionContext::VerifiedLocal,
+        context: execution_config.context,
+        quotas: execution_config.quotas,
         capability_manifest: capability_manifest.metadata(),
         gate_registry_bound: true,
     });

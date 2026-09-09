@@ -475,6 +475,30 @@ field, struct, archive format constant, or golden snapshot was touched by
 this update - AC4.c remains not satisfied until a separately authorized
 implementation checkpoint executes this now-complete mechanic.**
 
+**Implementation update (RECORD_EFFECTIVE executed, #1762 still OPEN
+pending merge):** `RuntimeSessionDescriptor` and `AuditSessionMetadata`
+both gained `quotas: RuntimeQuotas`, copied one-way from the same
+`ExecutionConfig` used for execution (never re-derived from `context`);
+`AUDIT_REPLAY_ARCHIVE_FORMAT_VERSION` bumped `1` → `2` exactly as frozen,
+`MULTI_SESSION_REPLAY_ARCHIVE_FORMAT_VERSION` left at `1`. A distinct
+custom envelope survived the full canonical pipeline value-for-value, and
+two sessions sharing one `ExecutionContext` with different `RuntimeQuotas`
+were proven distinguishable after a multi-session round-trip - the
+central #1762 trust invariant, proven not merely asserted. Three mutation
+proofs (context-derived descriptor reconstruction, parser
+context-derived reconstruction, missed version bump) each turned RED and
+were reverted. A pre-existing, unrelated gap was discovered and resolved
+with explicit owner input: `prom-audit` was missing from the public-API
+golden-snapshot guard's tracked file list entirely, leaving
+`AuditSessionMetadata`'s own public API unguarded; the owner chose to
+restore it to the tracked list within this same PR, which surfaced (and
+required reviewing) unrelated accumulated drift alongside the two
+intended changes. Every production construction site of both structs was
+manually classified; zero discard an available effective envelope in
+favor of a context-derived reconstruction. Full detail:
+`docs/roadmap/stable_foundation/ssf08_1762_execution_envelope_provenance_decision.md`
+§25.
+
 ## 7. #1763 — `RuntimeTrap` / `RuntimeError` taxonomy
 
 **Fresh trace, exhaustive, not sampled.** `RuntimeTrap` (13 variants):
@@ -895,13 +919,22 @@ target contract for over-strengthening:
   point-in-time confirmation on the current branch, not a standing
   guarantee against a future addition reopening the same failure mode.)*
 - **AC4.c** — `ExecutionContext`/provenance does not overstate the quota
-  envelope that actually governed execution. *(Not satisfied: `prom-runtime`/
-  `prom-audit` record only the context label, and nothing validates
-  context/quota consistency at construction. Disposition now frozen -
-  RECORD_EFFECTIVE, see
-  `docs/roadmap/stable_foundation/ssf08_1762_execution_envelope_provenance_decision.md` -
-  but not yet implemented; the exact mechanic (fields, copy path, archive
-  wire/version bump) is fully specified, not an open choice.)*
+  envelope that actually governed execution. *(Satisfied, freshly
+  re-audited against the implementation branch: `RuntimeSessionDescriptor`
+  and `AuditSessionMetadata` both now record `quotas: RuntimeQuotas`,
+  copied one-way from the same `ExecutionConfig` used for execution -
+  never re-derived from `context`. Every production construction site of
+  both structs was manually classified (SAME AUTHORITY or explicit
+  synthetic/audit-only fixture); zero discard an available effective
+  envelope in favor of a context-derived reconstruction. A distinct
+  custom envelope was proven to survive the full canonical archive
+  pipeline value-for-value, and two sessions sharing one `ExecutionContext`
+  with different `RuntimeQuotas` were proven distinguishable after a
+  multi-session round-trip. See
+  `docs/roadmap/stable_foundation/ssf08_1762_execution_envelope_provenance_decision.md`
+  §25. This is a point-in-time confirmation on the current branch, not a
+  standing guarantee against a future construction site reintroducing the
+  same failure mode.)*
 - **AC4.d** — Verification rejection, runtime quota exhaustion, semantic
   trap, capability denial, and host/ABI failure have an explicit,
   deterministic taxonomy that matches what production code actually

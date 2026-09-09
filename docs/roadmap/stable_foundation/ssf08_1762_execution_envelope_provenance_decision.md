@@ -766,3 +766,95 @@ RECORD-style disposition per the governing brief's own §19 checklist:
 proceed directly from this document without a further design pass.
 
 **Wait for owner GO before implementation.**
+
+## 25. Implementation update (post-freeze)
+
+The RECORD_EFFECTIVE disposition frozen above landed exactly as
+specified, on top of `main` at `063652dad2c08980e6f134cc3205b064a86059f2`
+(PR #1908's merge commit).
+
+- `crates/prom-runtime/src/lib.rs`: `RuntimeSessionDescriptor` gained
+  `pub quotas: RuntimeQuotas`. `ExecutionSession::new` and
+  `GateExecutionSession::new` both copy `quotas: config.quotas` alongside
+  the pre-existing `context: config.context`, from the same
+  `ExecutionConfig` parameter. `build_audit_session` copies
+  `quotas: descriptor.quotas` one hop further into `AuditSessionMetadata`
+  - the one-way `ExecutionConfig` → `RuntimeSessionDescriptor` →
+    `AuditSessionMetadata` copy path is unchanged in shape, only widened.
+- `crates/prom-audit/src/lib.rs`: `AuditSessionMetadata` gained
+  `pub quotas: RuntimeQuotas`. `AUDIT_REPLAY_ARCHIVE_FORMAT_VERSION`
+  bumped `1` → `2`; `MULTI_SESSION_REPLAY_ARCHIVE_FORMAT_VERSION` left at
+  `1` exactly as frozen. The canonical `session` line now emits 13
+  tab-separated tokens (up from 5), the eight `RuntimeQuotas` fields
+  appended in struct declaration order as plain decimal `usize` text.
+  `from_canonical_text` parses all eight via the existing
+  `parse_usize_field` discipline into a `RuntimeQuotas` literal - no
+  defaults, no `..RuntimeQuotas::verified_local()`, no
+  `RuntimeQuotas::for_context(...)` fallback.
+- `crates/smc-cli/src/app.rs`: `collect_controlled_observation_envelope`'s
+  direct `AuditSessionMetadata` literal previously hardcoded
+  `ExecutionContext::VerifiedLocal` with no quota field at all (pre-#1762
+  shape). Since the actual execution
+  (`run_semcode_collecting_hello_observations`) uses an internal,
+  non-surfaced `ExecutionConfig::for_context(ExecutionContext::VerifiedLocal)`,
+  this site now constructs that identical canonical `ExecutionConfig`
+  locally and copies both `.context` and `.quotas` from it - recording the
+  envelope that actually governs that call, not a value reconstructed
+  independently of it.
+- Compiler fallout after the two struct-shape changes was exactly the
+  sites this document's own mechanic predicted:
+  `crates/prom-audit/src/lib.rs`'s own parser and one test fixture, the
+  `smc-cli` site above, and two direct literals in
+  `tests/prometheus_audit.rs`. No unaccounted-for production reader
+  appeared. Every non-canonical-propagation literal was classified by
+  hand (SAME AUTHORITY vs. explicit synthetic/audit-only fixture, never a
+  silent context→quota reconstruction where a real `ExecutionConfig` was
+  discarded) rather than mechanically silenced.
+- **Adversarial proof:** a distinct custom envelope (101/102/.../108,
+  chosen so no field could be mistaken for any baseline) survives
+  `ExecutionConfig` → `RuntimeSessionDescriptor` → `AuditSessionMetadata`
+  → `AuditReplayArchive::to_canonical_text` →
+  `AuditReplayArchive::from_canonical_text` → `ReplayMetadata`
+  value-for-value. Two sessions sharing `ExecutionContext::VerifiedLocal`
+  but carrying different `RuntimeQuotas` (canonical `verified_local()` vs.
+  `max_effect_calls: 1`) remain distinguishable after a full
+  `MultiSessionReplayArchive` canonical round-trip - the central #1762
+  trust invariant, proven end to end, not merely asserted.
+- Three temporary mutations each turned the relevant regression RED and
+  were fully reverted: (M1) a `prom-runtime` descriptor copy replaced with
+  a context-derived `RuntimeQuotas::verified_local()`; (M2) the archive
+  parser's eight quota fields replaced with a hardcoded
+  `RuntimeQuotas::verified_local()` regardless of what was actually
+  serialized; (M3) `AUDIT_REPLAY_ARCHIVE_FORMAT_VERSION` left at `1` after
+  the wire-shape change.
+- **A gap discovered during implementation, resolved with explicit owner
+  input, not silently:** `tests/golden_snapshots/public_api/prom_audit_lib.txt`
+  existed but `tests/public_api_contracts.rs` did not actually track
+  `crates/prom-audit/src/lib.rs` in its guarded-file list - a pre-existing
+  omission unrelated to this checkpoint, which meant `AuditSessionMetadata`'s
+  own public API (the exact type this implementation widens) was
+  unguarded. The owner explicitly chose to restore `prom-audit` to the
+  tracked list as part of this same PR. Doing so surfaced accumulated,
+  pre-existing drift unrelated to #1762 (expanded `AuditEventKind`
+  variant text, multi-line constructor signatures) alongside the two
+  intended changes (`quotas` field, format-version bump); the full diff
+  was reviewed manually before regeneration - see the PR body for
+  specifics.
+- Public API guard: RED first (drift isolated to `RuntimeSessionDescriptor`/
+  `AuditSessionMetadata` gaining `quotas: RuntimeQuotas`, plus the version
+  bump and the now-tracked `prom-audit` catch-up noted above), regenerated
+  via `SM_UPDATE_PUBLIC_API_SNAPSHOTS=1`, diff reviewed, then GREEN.
+- `docs/spec/quotas.md` and `docs/spec/audit.md` updated to
+  active-document the implemented provenance rule and the archive
+  wire/version consequence; `docs/spec/vm.md` inspected and found to
+  contain no active contradiction requiring a change.
+- **AC4.c, freshly re-evaluated against the implementation branch:**
+  every production construction site of `RuntimeSessionDescriptor` and
+  `AuditSessionMetadata` was manually classified. Zero production paths
+  discard an available `config.quotas` in favor of a context-derived
+  reconstruction. **AC4.c: SATISFIED.** `AC4.d` and `AC4.e` remain
+  unaddressed - `#1763` territory, not claimed here.
+
+`#1763` and `#1902` were not touched by this implementation.
+
+**Wait for explicit owner GO before merge.**

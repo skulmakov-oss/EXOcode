@@ -75,6 +75,10 @@ const TARGETS: &[(&str, &str)] = &[
         "tests/golden_snapshots/public_api/prom_cap_lib.txt",
     ),
     (
+        "crates/prom-audit/src/lib.rs",
+        "tests/golden_snapshots/public_api/prom_audit_lib.txt",
+    ),
+    (
         "crates/prom-runtime/src/lib.rs",
         "tests/golden_snapshots/public_api/prom_runtime_lib.txt",
     ),

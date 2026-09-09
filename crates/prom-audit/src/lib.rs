@@ -8,7 +8,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use hello_observation_audit::ControlledObservationAuditDecision;
 use prom_cap::{CapabilityKind, CapabilityManifestMetadata, CapabilityManifestVersion};
-use sm_runtime_core::ExecutionContext;
+use sm_runtime_core::{ExecutionContext, RuntimeQuotas};
 
 const AUDIT_REPLAY_ARCHIVE_MAGIC: &str = "semantic_audit_replay_archive";
 const MULTI_SESSION_REPLAY_ARCHIVE_MAGIC: &str = "semantic_multi_session_replay_archive";
@@ -19,6 +19,7 @@ pub struct AuditEventId(pub u64);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditSessionMetadata {
     pub context: ExecutionContext,
+    pub quotas: RuntimeQuotas,
     pub capability_manifest: CapabilityManifestMetadata,
     pub gate_registry_bound: bool,
 }
@@ -80,7 +81,7 @@ pub struct ReplayMetadata {
     pub last_event_id: Option<AuditEventId>,
 }
 
-pub const AUDIT_REPLAY_ARCHIVE_FORMAT_VERSION: u32 = 1;
+pub const AUDIT_REPLAY_ARCHIVE_FORMAT_VERSION: u32 = 2;
 pub const MULTI_SESSION_REPLAY_ARCHIVE_FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,6 +198,28 @@ impl AuditReplayArchive {
         } else {
             "false"
         });
+        out.push('\t');
+        out.push_str(&self.session.quotas.max_steps.to_string());
+        out.push('\t');
+        out.push_str(&self.session.quotas.max_calls.to_string());
+        out.push('\t');
+        out.push_str(&self.session.quotas.max_stack_depth.to_string());
+        out.push('\t');
+        out.push_str(&self.session.quotas.max_frames.to_string());
+        out.push('\t');
+        out.push_str(&self.session.quotas.max_registers.to_string());
+        out.push('\t');
+        out.push_str(&self.session.quotas.max_symbol_table.to_string());
+        out.push('\t');
+        out.push_str(&self.session.quotas.max_effect_calls.to_string());
+        out.push('\t');
+        out.push_str(
+            &self
+                .session
+                .quotas
+                .max_debug_symbols_per_function
+                .to_string(),
+        );
         out.push('\n');
         out.push_str("events\t");
         out.push_str(&self.events.len().to_string());
@@ -242,7 +265,7 @@ impl AuditReplayArchive {
             .next()
             .ok_or_else(|| AuditReplayArchiveFormatError::new("missing session line"))?;
         let session_parts = split_archive_line(session_line);
-        if session_parts.len() != 5 || session_parts[0] != "session" {
+        if session_parts.len() != 13 || session_parts[0] != "session" {
             return Err(AuditReplayArchiveFormatError::new("invalid session line"));
         }
         let session = AuditSessionMetadata {
@@ -252,6 +275,19 @@ impl AuditReplayArchive {
                 version: parse_manifest_version(session_parts[3])?,
             },
             gate_registry_bound: parse_bool_field(session_parts[4], "gate registry bound")?,
+            quotas: RuntimeQuotas {
+                max_steps: parse_usize_field(session_parts[5], "max_steps")?,
+                max_calls: parse_usize_field(session_parts[6], "max_calls")?,
+                max_stack_depth: parse_usize_field(session_parts[7], "max_stack_depth")?,
+                max_frames: parse_usize_field(session_parts[8], "max_frames")?,
+                max_registers: parse_usize_field(session_parts[9], "max_registers")?,
+                max_symbol_table: parse_usize_field(session_parts[10], "max_symbol_table")?,
+                max_effect_calls: parse_usize_field(session_parts[11], "max_effect_calls")?,
+                max_debug_symbols_per_function: parse_usize_field(
+                    session_parts[12],
+                    "max_debug_symbols_per_function",
+                )?,
+            },
         };
 
         let events_line = lines
@@ -980,6 +1016,7 @@ mod tests {
     fn sample_session() -> AuditSessionMetadata {
         AuditSessionMetadata {
             context: ExecutionContext::KernelBound,
+            quotas: RuntimeQuotas::kernel_bound(),
             capability_manifest: CapabilityManifestMetadata {
                 schema: "prom.cap.manifest".to_string(),
                 version: prom_cap::CapabilityManifestVersion::V1,
@@ -1271,8 +1308,8 @@ mod tests {
     #[test]
     fn replay_archive_rejects_event_count_mismatch() {
         let text = "\
-semantic_audit_replay_archive\t1\n\
-session\tkernel-bound\tprom.cap.manifest\tv1\ttrue\n\
+semantic_audit_replay_archive\t2\n\
+session\tkernel-bound\tprom.cap.manifest\tv1\ttrue\t250000\t32768\t256\t256\t8192\t16384\t4096\t16384\n\
 events\t1\n\
 replay\t0\tnone\n";
 
@@ -1284,8 +1321,8 @@ replay\t0\tnone\n";
     #[test]
     fn replay_archive_rejects_non_monotonic_event_ids() {
         let text = "\
-semantic_audit_replay_archive\t1\n\
-session\tkernel-bound\tprom.cap.manifest\tv1\ttrue\n\
+semantic_audit_replay_archive\t2\n\
+session\tkernel-bound\tprom.cap.manifest\tv1\ttrue\t250000\t32768\t256\t256\t8192\t16384\t4096\t16384\n\
 events\t1\n\
 event\t9\tsession-finished\n\
 replay\t1\t9\n";
@@ -1355,7 +1392,7 @@ replay\t1\t9\n";
         assert_eq!(lines[0], "semantic_multi_session_replay_archive\t1");
         assert_eq!(lines[1], "sessions\t2");
         assert!(lines[2].starts_with("session\t0\t"));
-        assert!(lines[3].starts_with("archive\tsemantic_audit_replay_archive\t1"));
+        assert!(lines[3].starts_with("archive\tsemantic_audit_replay_archive\t2"));
     }
 
     #[test]
@@ -1364,8 +1401,8 @@ replay\t1\t9\n";
 semantic_multi_session_replay_archive\t1\n\
 sessions\t2\n\
 session\t0\t4\n\
-archive\tsemantic_audit_replay_archive\t1\n\
-archive\tsession\tkernel-bound\tprom.cap.manifest\tv1\ttrue\n\
+archive\tsemantic_audit_replay_archive\t2\n\
+archive\tsession\tkernel-bound\tprom.cap.manifest\tv1\ttrue\t250000\t32768\t256\t256\t8192\t16384\t4096\t16384\n\
 archive\tevents\t0\n\
 archive\treplay\t0\tnone\n";
 
@@ -1380,13 +1417,271 @@ archive\treplay\t0\tnone\n";
 semantic_multi_session_replay_archive\t1\n\
 sessions\t1\n\
 session\t9\t4\n\
-archive\tsemantic_audit_replay_archive\t1\n\
-archive\tsession\tkernel-bound\tprom.cap.manifest\tv1\ttrue\n\
+archive\tsemantic_audit_replay_archive\t2\n\
+archive\tsession\tkernel-bound\tprom.cap.manifest\tv1\ttrue\t250000\t32768\t256\t256\t8192\t16384\t4096\t16384\n\
 archive\tevents\t0\n\
 archive\treplay\t0\tnone\n";
 
         let err = MultiSessionReplayArchive::from_canonical_text(text).expect_err("must reject");
 
         assert!(err.message.contains("monotonic"));
+    }
+
+    // #1762 (FA-08-004): a custom envelope whose eight values cannot
+    // plausibly be mistaken for any baseline profile - makes any
+    // re-derivation-from-context or field-order mistake obvious.
+    fn custom_quota_envelope() -> RuntimeQuotas {
+        RuntimeQuotas {
+            max_steps: 101,
+            max_calls: 102,
+            max_stack_depth: 103,
+            max_frames: 104,
+            max_registers: 105,
+            max_symbol_table: 106,
+            max_effect_calls: 107,
+            max_debug_symbols_per_function: 108,
+        }
+    }
+
+    fn custom_session(context: ExecutionContext) -> AuditSessionMetadata {
+        AuditSessionMetadata {
+            context,
+            quotas: custom_quota_envelope(),
+            capability_manifest: CapabilityManifestMetadata {
+                schema: "prom.cap.manifest".to_string(),
+                version: prom_cap::CapabilityManifestVersion::V1,
+            },
+            gate_registry_bound: false,
+        }
+    }
+
+    // #1762 primary regression: the distinct custom envelope must survive
+    // AuditSessionMetadata -> AuditReplayArchive -> canonical text ->
+    // parsed archive -> ReplayMetadata bit-for-bit, with no re-derivation
+    // from `context` anywhere in the pipeline.
+    #[test]
+    fn effective_quota_envelope_survives_full_canonical_pipeline() {
+        let mut trail = AuditTrail::new(custom_session(ExecutionContext::VerifiedLocal));
+        trail.record(AuditEventKind::SessionStarted {
+            entry: "main".to_string(),
+        });
+
+        let archive = trail.replay_archive();
+        assert_eq!(archive.session.quotas, custom_quota_envelope());
+
+        let text = archive.to_canonical_text();
+        let parsed = AuditReplayArchive::from_canonical_text(&text).expect("parse");
+
+        assert_eq!(parsed, archive);
+        assert_eq!(parsed.session.quotas, custom_quota_envelope());
+        assert_eq!(parsed.replay.session.quotas, custom_quota_envelope());
+    }
+
+    // #1762: exact wire shape - 13 tokens, quota fields in RuntimeQuotas
+    // struct declaration order.
+    #[test]
+    fn canonical_session_line_emits_thirteen_tokens_in_frozen_quota_order() {
+        let trail = AuditTrail::new(custom_session(ExecutionContext::VerifiedLocal));
+        let text = trail.replay_archive().to_canonical_text();
+        let session_line = text.lines().nth(1).expect("session line");
+
+        assert_eq!(
+            session_line,
+            "session\tverified-local\tprom.cap.manifest\tv1\tfalse\t101\t102\t103\t104\t105\t106\t107\t108"
+        );
+        assert_eq!(session_line.split('\t').count(), 13);
+    }
+
+    // #1762 (§12): ReplayMetadata does not own a second, independently
+    // derived quota field - `archive.session.quotas` and
+    // `archive.replay.session.quotas` must be the identical value, both
+    // immediately after construction and after a canonical round-trip.
+    #[test]
+    fn replay_metadata_session_matches_archive_session_including_quotas() {
+        let mut trail = AuditTrail::new(custom_session(ExecutionContext::KernelBound));
+        trail.record(AuditEventKind::SessionFinished);
+
+        let archive = trail.replay_archive();
+        assert_eq!(archive.session.quotas, archive.replay.session.quotas);
+
+        let parsed =
+            AuditReplayArchive::from_canonical_text(&archive.to_canonical_text()).expect("parse");
+        assert_eq!(parsed.session.quotas, parsed.replay.session.quotas);
+        assert_eq!(parsed.session.quotas, custom_quota_envelope());
+    }
+
+    // #1762 (§10): a legacy v1 archive (5-token session line, no quota
+    // data ever recorded) must be rejected by the v2 reader through the
+    // existing version-mismatch channel - never silently backfilled with
+    // a context-derived baseline.
+    #[test]
+    fn replay_archive_rejects_legacy_v1_format_version() {
+        let text = "\
+semantic_audit_replay_archive\t1\n\
+session\tkernel-bound\tprom.cap.manifest\tv1\ttrue\n\
+events\t0\n\
+replay\t0\tnone\n";
+
+        let err = AuditReplayArchive::from_canonical_text(text).expect_err("must reject v1");
+
+        assert!(err.message.contains("unsupported archive format version 1"));
+        assert!(err.message.contains("expected 2"));
+    }
+
+    // #1762 (§9): a malformed quota numeric field must fail deterministically
+    // through the existing `AuditReplayArchiveFormatError` channel, exactly
+    // like any other malformed numeric field in this format.
+    #[test]
+    fn replay_archive_rejects_malformed_quota_numeric_field() {
+        let text = "\
+semantic_audit_replay_archive\t2\n\
+session\tverified-local\tprom.cap.manifest\tv1\tfalse\t101\tnot-a-number\t103\t104\t105\t106\t107\t108\n\
+events\t0\n\
+replay\t0\tnone\n";
+
+        let err = AuditReplayArchive::from_canonical_text(text).expect_err("must reject");
+
+        assert!(err.message.contains("max_calls"));
+    }
+
+    // #1762 (§9): no permissive parser - a session line with one field too
+    // few or too many must reject, not silently truncate/pad.
+    #[test]
+    fn replay_archive_rejects_session_line_with_wrong_token_count() {
+        let too_few = "\
+semantic_audit_replay_archive\t2\n\
+session\tverified-local\tprom.cap.manifest\tv1\tfalse\t101\t102\t103\t104\t105\t106\t107\n\
+events\t0\n\
+replay\t0\tnone\n";
+        let err =
+            AuditReplayArchive::from_canonical_text(too_few).expect_err("12 tokens must reject");
+        assert!(err.message.contains("invalid session line"));
+
+        let too_many = "\
+semantic_audit_replay_archive\t2\n\
+session\tverified-local\tprom.cap.manifest\tv1\tfalse\t101\t102\t103\t104\t105\t106\t107\t108\t109\n\
+events\t0\n\
+replay\t0\tnone\n";
+        let err =
+            AuditReplayArchive::from_canonical_text(too_many).expect_err("14 tokens must reject");
+        assert!(err.message.contains("invalid session line"));
+    }
+
+    // #1762 (§11, §16): the outer multi-session format stays at version 1
+    // while its embedded archives are independently versioned v2 - proving
+    // the frozen "outer version unchanged" decision round-trips for real,
+    // not just in principle.
+    #[test]
+    fn multi_session_replay_archive_keeps_outer_v1_with_embedded_v2_archives() {
+        let mut first = AuditTrail::new(custom_session(ExecutionContext::VerifiedLocal));
+        first.record(AuditEventKind::SessionStarted {
+            entry: "alpha".to_string(),
+        });
+
+        let mut second = AuditTrail::new(sample_session());
+        second.record(AuditEventKind::SessionFinished);
+
+        let archive = MultiSessionReplayArchive::new(vec![
+            MultiSessionReplayArchiveSession::new(0, first.replay_archive()),
+            MultiSessionReplayArchiveSession::new(1, second.replay_archive()),
+        ]);
+        assert_eq!(archive.format_version, 1);
+        assert_eq!(archive.sessions[0].archive.format_version, 2);
+        assert_eq!(archive.sessions[1].archive.format_version, 2);
+
+        let text = archive.to_canonical_text();
+        assert!(text.starts_with("semantic_multi_session_replay_archive\t1\n"));
+        assert!(text.contains("archive\tsemantic_audit_replay_archive\t2\n"));
+
+        let parsed = MultiSessionReplayArchive::from_canonical_text(&text).expect("parse");
+        assert_eq!(parsed, archive);
+        assert_eq!(
+            parsed.sessions[0].archive.session.quotas,
+            custom_quota_envelope()
+        );
+    }
+
+    // #1762 (§16.D): the especially valuable regression - two sessions
+    // sharing the identical ExecutionContext but carrying different
+    // RuntimeQuotas must remain distinguishable after a full multi-session
+    // canonical round-trip. Same label, different effective envelope,
+    // provenance tells them apart.
+    #[test]
+    fn multi_session_replay_archive_distinguishes_same_context_different_quotas() {
+        let mut baseline = AuditTrail::new(AuditSessionMetadata {
+            context: ExecutionContext::VerifiedLocal,
+            quotas: RuntimeQuotas::verified_local(),
+            capability_manifest: CapabilityManifestMetadata {
+                schema: "prom.cap.manifest".to_string(),
+                version: prom_cap::CapabilityManifestVersion::V1,
+            },
+            gate_registry_bound: false,
+        });
+        baseline.record(AuditEventKind::SessionStarted {
+            entry: "main".to_string(),
+        });
+
+        let mut tightened = AuditTrail::new(AuditSessionMetadata {
+            context: ExecutionContext::VerifiedLocal,
+            quotas: RuntimeQuotas {
+                max_effect_calls: 1,
+                ..RuntimeQuotas::verified_local()
+            },
+            capability_manifest: CapabilityManifestMetadata {
+                schema: "prom.cap.manifest".to_string(),
+                version: prom_cap::CapabilityManifestVersion::V1,
+            },
+            gate_registry_bound: false,
+        });
+        tightened.record(AuditEventKind::SessionStarted {
+            entry: "main".to_string(),
+        });
+
+        let archive = MultiSessionReplayArchive::new(vec![
+            MultiSessionReplayArchiveSession::new(0, baseline.replay_archive()),
+            MultiSessionReplayArchiveSession::new(1, tightened.replay_archive()),
+        ]);
+        let parsed = MultiSessionReplayArchive::from_canonical_text(&archive.to_canonical_text())
+            .expect("parse");
+
+        assert_eq!(
+            parsed.sessions[0].archive.session.context,
+            parsed.sessions[1].archive.session.context
+        );
+        assert_eq!(
+            parsed.sessions[0].archive.session.quotas,
+            RuntimeQuotas::verified_local()
+        );
+        assert_eq!(
+            parsed.sessions[1].archive.session.quotas.max_effect_calls,
+            1
+        );
+        assert_ne!(
+            parsed.sessions[0].archive.session.quotas,
+            parsed.sessions[1].archive.session.quotas
+        );
+    }
+
+    // #1762 (§11, §16.E): an old inner v1 archive embedded under an
+    // (unchanged) outer v1 multi-session archive must still be rejected -
+    // proving `MultiSessionReplayArchive` genuinely delegates to
+    // `AuditReplayArchive::from_canonical_text` rather than duplicating a
+    // now-stale copy of the session-line parsing logic.
+    #[test]
+    fn multi_session_replay_archive_rejects_legacy_v1_embedded_archive() {
+        let text = "\
+semantic_multi_session_replay_archive\t1\n\
+sessions\t1\n\
+session\t0\t4\n\
+archive\tsemantic_audit_replay_archive\t1\n\
+archive\tsession\tkernel-bound\tprom.cap.manifest\tv1\ttrue\n\
+archive\tevents\t0\n\
+archive\treplay\t0\tnone\n";
+
+        let err = MultiSessionReplayArchive::from_canonical_text(text)
+            .expect_err("embedded v1 archive must reject");
+
+        assert!(err.message.contains("unsupported archive format version 1"));
+        assert!(err.message.contains("expected 2"));
     }
 }
