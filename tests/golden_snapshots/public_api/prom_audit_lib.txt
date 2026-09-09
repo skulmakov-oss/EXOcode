@@ -5,10 +5,21 @@ pub struct AuditEventId(pub u64);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditSessionMetadata {
 pub context: ExecutionContext,
+pub quotas: RuntimeQuotas,
 pub capability_manifest: CapabilityManifestMetadata,
 pub gate_registry_bound: bool,
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuditEventKind {
+SessionStarted { entry: String },
+SessionFinished,
+RuleActivated { rule_id: String, salience: i32 },
+StateTransition { key: String, from_epoch: u64, to_epoch: u64 },
+CapabilityDenied { capability: CapabilityKind, call: Option<String> },
+ControlledObservation { operation_kind: String, observation_class: String, payload_hash: Option<u64>, redacted: bool, sequence_index: u64, policy: ControlledObservationAuditDecision, linkage: crate::hello_observation_audit::HelloObservationAuditLinkage },
+GateRead { device_id: u16, port: u16 },
+GateWrite { device_id: u16, port: u16 },
+PulseEmit { signal: String },
+Note { message: String },
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditEvent {
 pub id: AuditEventId,
@@ -18,7 +29,7 @@ pub struct ReplayMetadata {
 pub session: AuditSessionMetadata,
 pub event_count: usize,
 pub last_event_id: Option<AuditEventId>,
-pub const AUDIT_REPLAY_ARCHIVE_FORMAT_VERSION: u32 = 1;
+pub const AUDIT_REPLAY_ARCHIVE_FORMAT_VERSION: u32 = 2;
 pub const MULTI_SESSION_REPLAY_ARCHIVE_FORMAT_VERSION: u32 = 1;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditReplayArchive {
@@ -48,12 +59,12 @@ pub fn events(&self) -> &[AuditEvent] {
 pub fn record(&mut self, kind: AuditEventKind) -> AuditEventId {
 pub fn replay_metadata(&self) -> ReplayMetadata {
 pub fn replay_archive(&self) -> AuditReplayArchive {
-pub fn new(
+pub fn new( session: AuditSessionMetadata, events: Vec<AuditEvent>, replay: ReplayMetadata, ) -> Self {
 pub fn to_canonical_text(&self) -> String {
 pub fn from_canonical_text(src: &str) -> Result<Self, AuditReplayArchiveFormatError> {
 pub fn new(session_ordinal: u32, archive: AuditReplayArchive) -> Self {
 pub fn new(sessions: Vec<MultiSessionReplayArchiveSession>) -> Self {
 pub fn to_canonical_text(&self) -> String {
-pub fn from_canonical_text(
+pub fn from_canonical_text(src: &str) -> Result<Self, MultiSessionReplayArchiveFormatError> {
 pub fn new(message: impl Into<String>) -> Self {
 pub fn new(message: impl Into<String>) -> Self {

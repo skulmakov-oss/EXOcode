@@ -10,13 +10,14 @@ use prom_state::{
     ContextWindow, FactResolution, SemanticStateStore, StateEpoch, StateTransitionMetadata,
     StateUpdate, StateValidationError,
 };
-use sm_runtime_core::{ExecutionConfig, ExecutionContext};
+use sm_runtime_core::{ExecutionConfig, ExecutionContext, RuntimeQuotas};
 use sm_verify::{verify_semcode_token_with_quotas, EntryResolutionError};
 use sm_vm::{run_verified_entry_semcode_with_host_and_capabilities_and_config, RuntimeError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeSessionDescriptor {
     pub context: ExecutionContext,
+    pub quotas: RuntimeQuotas,
     pub capability_manifest: CapabilityManifestMetadata,
     pub gate_registry_bound: bool,
 }
@@ -97,6 +98,7 @@ impl std::error::Error for RuleEffectExecutionError {}
 fn build_audit_session(descriptor: &RuntimeSessionDescriptor) -> AuditSessionMetadata {
     AuditSessionMetadata {
         context: descriptor.context,
+        quotas: descriptor.quotas,
         capability_manifest: descriptor.capability_manifest.clone(),
         gate_registry_bound: descriptor.gate_registry_bound,
     }
@@ -240,6 +242,7 @@ impl<'a, H: PrometheusHostAbi, C: CapabilityChecker> ExecutionSession<'a, H, C> 
             capabilities,
             descriptor: RuntimeSessionDescriptor {
                 context: config.context,
+                quotas: config.quotas,
                 capability_manifest,
                 gate_registry_bound: false,
             },
@@ -405,6 +408,7 @@ impl<'a, B: GateBinding, C: CapabilityChecker> GateExecutionSession<'a, B, C> {
             capabilities,
             descriptor: RuntimeSessionDescriptor {
                 context: config.context,
+                quotas: config.quotas,
                 capability_manifest,
                 gate_registry_bound: true,
             },
@@ -866,5 +870,63 @@ mod tests {
         assert_eq!(err.rule_id.0, "rule.alpha");
         assert_eq!(err.effect_ordinal, 0);
         assert!(audit.events().is_empty());
+    }
+
+    // #1762 (FA-08-004) primary trust invariant: the same context label
+    // paired with a deliberately custom, distinct RuntimeQuotas envelope
+    // must propagate that exact envelope - not a context-derived baseline -
+    // all the way from `ExecutionConfig` through `RuntimeSessionDescriptor`
+    // into the audit trail's own session metadata.
+    fn custom_quota_envelope() -> RuntimeQuotas {
+        RuntimeQuotas {
+            max_steps: 101,
+            max_calls: 102,
+            max_stack_depth: 103,
+            max_frames: 104,
+            max_registers: 105,
+            max_symbol_table: 106,
+            max_effect_calls: 107,
+            max_debug_symbols_per_function: 108,
+        }
+    }
+
+    #[test]
+    fn execution_session_propagates_custom_envelope_into_descriptor_and_audit_session() {
+        let manifest = CapabilityManifest::gate_surface();
+        let metadata = manifest.metadata();
+        let mut host = RecordingHostAbi::with_read_value(AbiValue::I32(1));
+        let config = ExecutionConfig::new(ExecutionContext::VerifiedLocal, custom_quota_envelope());
+        let session = ExecutionSession::new(&mut host, &manifest, config, metadata);
+
+        assert_eq!(
+            session.descriptor().context,
+            ExecutionContext::VerifiedLocal
+        );
+        assert_eq!(session.descriptor().quotas, custom_quota_envelope());
+
+        let audit = session.begin_audit_trail();
+        assert_eq!(audit.session().context, ExecutionContext::VerifiedLocal);
+        assert_eq!(audit.session().quotas, custom_quota_envelope());
+    }
+
+    #[test]
+    fn gate_execution_session_propagates_custom_envelope_into_descriptor_and_audit_session() {
+        let manifest = CapabilityManifest::gate_surface();
+        let metadata = manifest.metadata();
+        let registry = GateRegistry::new();
+        let mut binding = DeterministicGateMock::new();
+        let config = ExecutionConfig::new(ExecutionContext::VerifiedLocal, custom_quota_envelope());
+        let session =
+            GateExecutionSession::new(&registry, &mut binding, &manifest, config, metadata);
+
+        assert_eq!(
+            session.descriptor().context,
+            ExecutionContext::VerifiedLocal
+        );
+        assert_eq!(session.descriptor().quotas, custom_quota_envelope());
+
+        let audit = session.begin_audit_trail();
+        assert_eq!(audit.session().context, ExecutionContext::VerifiedLocal);
+        assert_eq!(audit.session().quotas, custom_quota_envelope());
     }
 }

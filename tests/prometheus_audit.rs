@@ -4,7 +4,7 @@ use semantic_language::prom_audit::{AuditEventKind, AuditSessionMetadata, AuditT
 use semantic_language::prom_cap::{CapabilityKind, CapabilityManifest};
 use semantic_language::prom_gates::{DeterministicGateMock, GateDescriptor, GateId, GateRegistry};
 use semantic_language::prom_runtime::GateExecutionSession;
-use semantic_language::runtime_core::ExecutionContext;
+use semantic_language::runtime_core::{ExecutionContext, RuntimeQuotas};
 
 fn runtime_program() -> Vec<IrFunction> {
     vec![IrFunction {
@@ -47,6 +47,7 @@ fn audit_trail_reuses_runtime_session_descriptor_without_owning_runtime_logic() 
         GateExecutionSession::kernel_bound(&registry, &mut binding, &manifest, manifest.metadata());
     let audit_session = AuditSessionMetadata {
         context: session.descriptor().context,
+        quotas: session.descriptor().quotas,
         capability_manifest: session.descriptor().capability_manifest.clone(),
         gate_registry_bound: session.descriptor().gate_registry_bound,
     };
@@ -80,6 +81,7 @@ fn audit_trail_reuses_runtime_session_descriptor_without_owning_runtime_logic() 
 fn audit_trail_records_capability_denial_with_manifest_context() {
     let mut audit = AuditTrail::new(AuditSessionMetadata {
         context: ExecutionContext::KernelBound,
+        quotas: RuntimeQuotas::kernel_bound(),
         capability_manifest: CapabilityManifest::new().metadata(),
         gate_registry_bound: true,
     });

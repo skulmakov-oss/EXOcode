@@ -2,6 +2,7 @@ source: crates/prom-runtime/src/lib.rs
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeSessionDescriptor {
 pub context: ExecutionContext,
+pub quotas: RuntimeQuotas,
 pub capability_manifest: CapabilityManifestMetadata,
 pub gate_registry_bound: bool,
 #[derive(Debug, Clone, PartialEq, Eq)]

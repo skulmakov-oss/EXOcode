@@ -15,7 +15,10 @@ Quota model rule:
 - `sm-vm` enforces quotas during execution, except `SymbolTable`, which
   `sm-verify` enforces statically, pre-execution, at admission
 - higher integration layers may choose context-specific quota envelopes, but
-  must not weaken the core safety contract silently
+  must not weaken the core safety contract silently - meaning divergence
+  from the baseline must be explicit in provenance (recorded, not hidden),
+  not that a weaker envelope is itself forbidden; see "Execution Envelope
+  Provenance Rule" below (#1762, FA-08-004)
 
 ## Quota Taxonomy
 
@@ -121,6 +124,36 @@ Contract rule:
 
 - context selection is explicit through `ExecutionConfig`
 - default execution for standard verified runs is `VerifiedLocal`
+
+## Execution Envelope Provenance Rule
+
+Frozen and implemented (#1762, FA-08-004,
+`docs/roadmap/stable_foundation/ssf08_1762_execution_envelope_provenance_decision.md`):
+
+- `ExecutionContext` is a construction-time baseline/default selector (via
+  `ExecutionConfig::for_context`) and an audit-class label. It is **not**
+  proof, by itself, of which `RuntimeQuotas` values actually governed a
+  given execution.
+- The `RuntimeQuotas` values carried in `ExecutionConfig.quotas` are the
+  actual effective authority for the quota/profile dimensions
+  `RuntimeQuotas` represents. This does **not** extend to
+  `VerificationLimits` (an orthogonal verifier envelope),
+  `sm-format`'s structural decode-time caps, verifier rules unrelated to
+  `RuntimeQuotas`, capability policy, or any other independent admission
+  authority.
+- `ExecutionConfig::new(context, quotas)` remains supported: custom
+  envelopes (a `context` paired with `quotas` that diverge from
+  `for_context`'s canonical mapping) are permitted, with no
+  equality-with-baseline validation and no stricter-than-baseline
+  restriction.
+- Because custom envelopes are permitted, `prom_runtime::RuntimeSessionDescriptor`
+  and `prom_audit::AuditSessionMetadata` record the **effective**
+  `RuntimeQuotas` actually used - copied from the same `ExecutionConfig`
+  passed to session construction, never re-derived from `context` - so
+  that two sessions sharing the same `ExecutionContext` but running under
+  different `RuntimeQuotas` remain distinguishable in provenance. See
+  `docs/spec/audit.md`'s "Effective Quota Provenance Rule" for the archive
+  wire-format consequence.
 
 ## Enforcement Rule
 
