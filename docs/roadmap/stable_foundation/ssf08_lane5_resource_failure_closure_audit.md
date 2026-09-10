@@ -638,6 +638,41 @@ freezing which `RuntimeTrap` variants remain, and reconciling with
 `trap_taxonomy.md`'s own evidence citations, informed by the other four
 findings' final shape.
 
+**Decision update (contract frozen, no implementation):** `#1759`/`#1900`/
+`#1761`/`#1760`/`#1762`, all closed since this section was first written,
+have settled every dependency this section itself named - `QuotaKind`'s
+active shape is final (7 members, no `ConstPool`, no `TraceEntries`), and
+`RuntimeError::QuotaExceeded` is confirmed the sole live quota-exhaustion
+channel. The disposition question is now decided in
+`docs/roadmap/stable_foundation/ssf08_1763_runtime_failure_taxonomy_decision.md`:
+**Model B (semantic program traps only)**. `RuntimeTrap` is frozen as
+meaning exactly "a failure caused by executing an otherwise-admitted
+Semantic program where the instruction/program semantics deliberately
+trap" - its four live members (`AssertionFailed`, `BorrowWriteConflict`,
+`DivisionByZero`, `ArithmeticOverflow`) are the whole of that class; the
+other nine are frozen `REMOVE_DUPLICATE`, each with its real authority
+already living, fully structured, on a same-conceptual `RuntimeError`
+variant (`StackOverflow`, `StackUnderflow`, `TypeMismatchRuntime`,
+`BadFormat`, `InvalidJumpAddress`, `CapabilityDenied`, `HostAbi`,
+`VerifierRejected`, `QuotaExceeded` respectively) - confirmed zero payload
+information is lost by the narrowing, since none of the nine was ever
+constructed to begin with. `RuntimeError` itself needs no variant change;
+`Trap(RuntimeTrap)` is retained, narrowed automatically. Models A
+(trap = all execution failures) and C (eliminate `RuntimeTrap` entirely)
+were falsified as unforced architecture changes with no evidenced
+benefit; Model D (reserve the dead variants) was falsified for the same
+reason `ConstPool`/`TraceEntries` were - no compatibility authority
+requires preserving inert, misleading vocabulary, and five of the nine
+dead variants actively name-collide with the real `RuntimeError` channel
+doing the actual job. The exact future mechanic (which variants are
+removed, the `vm.md` correction, the `trap_taxonomy.md` addendum, the
+public-API RED→GREEN scope, the test matrix) is fully frozen in that
+document's own §21-§25 - a fully-specified mechanic, not an open choice.
+**This is a contract decision only. `#1763` remains OPEN. No field,
+variant, diagnostic, or golden snapshot was touched by this update -
+AC4.d/AC4.e remain not satisfied until a separately authorized
+implementation checkpoint executes this now-complete mechanic.**
+
 ## 8. New residual findings discovered during this audit
 
 Per item 11's explicit instruction, this section records findings outside
@@ -958,11 +993,18 @@ target contract for over-strengthening:
   deterministic taxonomy that matches what production code actually
   constructs. *(Not satisfied: nine of thirteen `RuntimeTrap` variants are
   never constructed, and `vm.md`'s own list is incomplete in the other
-  direction.)*
+  direction. Disposition now frozen - Model B (semantic program traps
+  only), see
+  `docs/roadmap/stable_foundation/ssf08_1763_runtime_failure_taxonomy_decision.md` -
+  but not yet implemented; the exact mechanic (which variants are
+  removed, diagnostic/doc updates, public-API scope, test matrix) is
+  fully specified, not an open choice.)*
 - **AC4.e** — Public docs (`docs/spec/quotas.md`, `docs/spec/vm.md`,
   `trap_taxonomy.md` insofar as SSF-08 can influence a cross-track
   document) match the actual failure/resource authority present in code.
-  *(Not satisfied per §8's three residual findings.)*
+  *(Not satisfied per §8's three residual findings. `vm.md`'s correction
+  and a `trap_taxonomy.md` addendum are both frozen as required future
+  implementation steps in the same decision document referenced above.)*
 
 These subcriteria refine, but do not strengthen, #1579's existing AC4 text
 - they decompose one broad acceptance line into checkable parts already
