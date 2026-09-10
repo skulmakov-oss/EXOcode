@@ -794,13 +794,24 @@ specified, on top of `main` at `063652dad2c08980e6f134cc3205b064a86059f2`
 - `crates/smc-cli/src/app.rs`: `collect_controlled_observation_envelope`'s
   direct `AuditSessionMetadata` literal previously hardcoded
   `ExecutionContext::VerifiedLocal` with no quota field at all (pre-#1762
-  shape). Since the actual execution
-  (`run_semcode_collecting_hello_observations`) uses an internal,
-  non-surfaced `ExecutionConfig::for_context(ExecutionContext::VerifiedLocal)`,
-  this site now constructs that identical canonical `ExecutionConfig`
-  locally and copies both `.context` and `.quotas` from it - recording the
-  envelope that actually governs that call, not a value reconstructed
-  independently of it.
+  shape). The final implementation constructs exactly **one**
+  `ExecutionConfig::for_context(ExecutionContext::VerifiedLocal)` binding
+  before admission and threads that single instance through every
+  consumer: its `quotas` are supplied to
+  `verify_semcode_token_with_quotas` for admission, the same
+  `ExecutionConfig` value is supplied to the new config-aware
+  `run_semcode_collecting_hello_observations_with_config` (`crates/sm-vm/src/semcode_vm.rs`)
+  for execution, and the same binding's `.context`/`.quotas` populate the
+  `AuditSessionMetadata` literal. The legacy no-config
+  `run_semcode_collecting_hello_observations` now delegates to the
+  config-aware sibling with the canonical default, preserving its existing
+  signature for other callers. No independent context→quota
+  reconstruction remains anywhere in this CLI path - a first attempt at
+  this site (constructing a second, separately-hardcoded canonical config
+  purely for provenance, while execution still hardcoded its own,
+  unparameterized config internally) was caught in review as itself an
+  instance of the pattern this checkpoint exists to eliminate, and was
+  corrected before merge.
 - Compiler fallout after the two struct-shape changes was exactly the
   sites this document's own mechanic predicted:
   `crates/prom-audit/src/lib.rs`'s own parser and one test fixture, the
@@ -820,13 +831,19 @@ specified, on top of `main` at `063652dad2c08980e6f134cc3205b064a86059f2`
   `max_effect_calls: 1`) remain distinguishable after a full
   `MultiSessionReplayArchive` canonical round-trip - the central #1762
   trust invariant, proven end to end, not merely asserted.
-- Three temporary mutations each turned the relevant regression RED and
+- Four temporary mutations each turned the relevant regression RED and
   were fully reverted: (M1) a `prom-runtime` descriptor copy replaced with
   a context-derived `RuntimeQuotas::verified_local()`; (M2) the archive
   parser's eight quota fields replaced with a hardcoded
   `RuntimeQuotas::verified_local()` regardless of what was actually
   serialized; (M3) `AUDIT_REPLAY_ARCHIVE_FORMAT_VERSION` left at `1` after
-  the wire-shape change.
+  the wire-shape change; (M4) the config-aware
+  `run_semcode_collecting_hello_observations_with_config` temporarily
+  ignored its own `config` parameter and used canonical `VerifiedLocal`
+  internally instead - a program that should have failed under a
+  drastically tightened `max_steps` succeeded instead, proving the
+  regression genuinely exercises the passed-in config rather than a
+  config-blind fallback.
 - **A gap discovered during implementation, resolved with explicit owner
   input, not silently:** `tests/golden_snapshots/public_api/prom_audit_lib.txt`
   existed but `tests/public_api_contracts.rs` did not actually track

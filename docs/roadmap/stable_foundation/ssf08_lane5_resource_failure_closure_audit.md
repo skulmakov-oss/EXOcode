@@ -475,27 +475,45 @@ field, struct, archive format constant, or golden snapshot was touched by
 this update - AC4.c remains not satisfied until a separately authorized
 implementation checkpoint executes this now-complete mechanic.**
 
-**Implementation update (RECORD_EFFECTIVE executed, #1762 still OPEN
-pending merge):** `RuntimeSessionDescriptor` and `AuditSessionMetadata`
-both gained `quotas: RuntimeQuotas`, copied one-way from the same
-`ExecutionConfig` used for execution (never re-derived from `context`);
-`AUDIT_REPLAY_ARCHIVE_FORMAT_VERSION` bumped `1` → `2` exactly as frozen,
-`MULTI_SESSION_REPLAY_ARCHIVE_FORMAT_VERSION` left at `1`. A distinct
-custom envelope survived the full canonical pipeline value-for-value, and
-two sessions sharing one `ExecutionContext` with different `RuntimeQuotas`
-were proven distinguishable after a multi-session round-trip - the
-central #1762 trust invariant, proven not merely asserted. Three mutation
-proofs (context-derived descriptor reconstruction, parser
-context-derived reconstruction, missed version bump) each turned RED and
-were reverted. A pre-existing, unrelated gap was discovered and resolved
-with explicit owner input: `prom-audit` was missing from the public-API
-golden-snapshot guard's tracked file list entirely, leaving
-`AuditSessionMetadata`'s own public API unguarded; the owner chose to
-restore it to the tracked list within this same PR, which surfaced (and
-required reviewing) unrelated accumulated drift alongside the two
-intended changes. Every production construction site of both structs was
-manually classified; zero discard an available effective envelope in
-favor of a context-derived reconstruction. Full detail:
+**Implementation update (RECORD_EFFECTIVE implemented by PR #1911; issue
+closure is merge-gated):** `RuntimeSessionDescriptor` and
+`AuditSessionMetadata` both gained `quotas: RuntimeQuotas`, copied
+one-way from the same `ExecutionConfig` used for execution (never
+re-derived from `context`); `AUDIT_REPLAY_ARCHIVE_FORMAT_VERSION` bumped
+`1` → `2` exactly as frozen, `MULTI_SESSION_REPLAY_ARCHIVE_FORMAT_VERSION`
+left at `1`. A distinct custom envelope survived the full canonical
+pipeline value-for-value, and two sessions sharing one `ExecutionContext`
+with different `RuntimeQuotas` were proven distinguishable after a
+multi-session round-trip - the central #1762 trust invariant, proven not
+merely asserted.
+
+In `crates/smc-cli/src/app.rs`, `collect_controlled_observation_envelope`
+now constructs exactly **one** `ExecutionConfig` binding and threads it
+through every consumer: its `quotas` feed quota-aware verifier admission
+(`verify_semcode_token_with_quotas`), the same binding feeds a new
+config-aware VM observation-execution helper
+(`run_semcode_collecting_hello_observations_with_config`, added to
+`sm-vm` for this purpose - the legacy no-config helper now delegates to
+it with the canonical default), and the same binding populates the audit
+metadata. A first attempt at this site constructed a second,
+independently-hardcoded canonical config purely for provenance while
+execution still hardcoded its own separate config internally - itself an
+instance of the reconstruction pattern this checkpoint exists to
+eliminate - caught in review and corrected before merge.
+
+Four mutation proofs (context-derived descriptor reconstruction, parser
+context-derived reconstruction, missed version bump, and - added for the
+single-authority CLI fix - the config-aware VM helper silently ignoring
+its caller-supplied config and falling back to canonical `VerifiedLocal`
+internally) each turned RED and were reverted. A pre-existing, unrelated
+gap was discovered and resolved with explicit owner input: `prom-audit`
+was missing from the public-API golden-snapshot guard's tracked file list
+entirely, leaving `AuditSessionMetadata`'s own public API unguarded; the
+owner chose to restore it to the tracked list within this same PR, which
+surfaced (and required reviewing) unrelated accumulated drift alongside
+the two intended changes. Every production construction site of both
+structs was manually classified; zero discard an available effective
+envelope in favor of a context-derived reconstruction. Full detail:
 `docs/roadmap/stable_foundation/ssf08_1762_execution_envelope_provenance_decision.md`
 §25.
 
