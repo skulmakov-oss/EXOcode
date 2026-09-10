@@ -665,11 +665,31 @@ pub fn run_verified_semcode(bytes: &[u8]) -> Result<(), RuntimeError> {
 pub fn run_semcode_collecting_hello_observations(
     bytes: &[u8],
 ) -> Result<Vec<HelloObservationEvent>, RuntimeError> {
+    run_semcode_collecting_hello_observations_with_config(
+        bytes,
+        ExecutionConfig::for_context(ExecutionContext::VerifiedLocal),
+    )
+}
+
+/// Raw execution path, config-aware sibling of
+/// `run_semcode_collecting_hello_observations`.
+///
+/// Bypasses `sm-verify` admission and executes raw SemCode bytes under the
+/// caller-supplied `ExecutionConfig`, rather than hardcoding one
+/// internally. Lets a caller construct a single `ExecutionConfig` once and
+/// thread the SAME instance through admission, execution, and provenance
+/// recording (#1762, FA-08-004) - never reconstructing a second,
+/// independently-hardcoded config that happens to agree today but is not
+/// the same authority.
+pub fn run_semcode_collecting_hello_observations_with_config(
+    bytes: &[u8],
+    config: ExecutionConfig,
+) -> Result<Vec<HelloObservationEvent>, RuntimeError> {
     let mut events = Vec::new();
     let collected = run_semcode_with_entry_and_config_with_observation_runtime(
         bytes,
         "main",
-        ExecutionConfig::for_context(ExecutionContext::VerifiedLocal),
+        config,
         HelloObservationRuntime::collect(&mut events),
     )?;
     debug_assert!(events.is_empty());
@@ -8125,6 +8145,49 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].sequence_index, HelloObservationSequenceIndex(0));
         assert_eq!(events[1].sequence_index, HelloObservationSequenceIndex(1));
+    }
+
+    // #1762 (FA-08-004): `run_semcode_collecting_hello_observations_with_config`
+    // must genuinely enforce the caller-supplied `ExecutionConfig`, not
+    // silently fall back to a hardcoded `VerifiedLocal` baseline the
+    // no-config wrapper uses. This is the load-bearing property behind
+    // `smc-cli` threading one `ExecutionConfig` through admission,
+    // execution, and audit provenance: if this function ignored its own
+    // `config` parameter, that single-authority fix would be cosmetic.
+    #[test]
+    fn run_semcode_collecting_hello_observations_with_config_enforces_the_passed_quotas() {
+        let src = r#"
+            fn main() {
+                print("Hello, World!");
+                print("Hello, World!");
+                return;
+            }
+        "#;
+        let bytes = compile_program_to_semcode(src).expect("compile");
+
+        let baseline = run_semcode_collecting_hello_observations_with_config(
+            &bytes,
+            ExecutionConfig::for_context(ExecutionContext::VerifiedLocal),
+        )
+        .expect("canonical VerifiedLocal quotas must admit this small program");
+        assert_eq!(baseline.len(), 2);
+
+        let tight_config = ExecutionConfig::new(
+            ExecutionContext::VerifiedLocal,
+            RuntimeQuotas {
+                max_steps: 1,
+                ..RuntimeQuotas::verified_local()
+            },
+        );
+        let err = run_semcode_collecting_hello_observations_with_config(&bytes, tight_config)
+            .expect_err("the passed-in, drastically tighter max_steps must be enforced");
+        assert!(matches!(
+            err,
+            RuntimeError::QuotaExceeded(QuotaExceeded {
+                kind: QuotaKind::Steps,
+                ..
+            })
+        ));
     }
 
     #[test]

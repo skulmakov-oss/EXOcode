@@ -31,9 +31,9 @@ use sm_ir::{compile_program_to_ir_with_options_and_profile, lower_logos_laws_to_
 use sm_runtime_core::hello_observation_sink::HelloObservationClass;
 use sm_runtime_core::{ExecutionConfig, ExecutionContext};
 use sm_sema::{check_file_with_provider_and_profile, check_source_with_profile, ModuleProvider};
-use sm_verify::{verify_semcode, verify_semcode_token};
+use sm_verify::{verify_semcode, verify_semcode_token, verify_semcode_token_with_quotas};
 use sm_vm::{
-    disasm_semcode, run_semcode_collecting_hello_observations,
+    disasm_semcode, run_semcode_collecting_hello_observations_with_config,
     run_verified_entry_semcode_with_application_host_and_capabilities_and_config, RuntimeError,
 };
 use std::collections::HashSet;
@@ -2789,9 +2789,20 @@ fn stable_text_hash(text: &str) -> u64 {
 fn collect_controlled_observation_envelope(
     bytes: &[u8],
 ) -> Result<ControlledObservationInternalEnvelope, String> {
-    verify_semcode(bytes).map_err(|report| report.to_string())?;
+    // #1762 (FA-08-004): construct exactly one ExecutionConfig and thread
+    // it, unchanged, through admission, execution, and provenance -
+    // never reconstruct a second, independently-hardcoded config that
+    // happens to agree today. Both `verify_semcode_token_with_quotas` and
+    // `run_semcode_collecting_hello_observations_with_config` consume
+    // this same instance, so the audit metadata built from it below
+    // records the actual authority, not a value derived after the fact.
+    let execution_config = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
 
-    let events = run_semcode_collecting_hello_observations(bytes).map_err(|e| e.to_string())?;
+    verify_semcode_token_with_quotas(bytes, execution_config.quotas)
+        .map_err(|report| report.to_string())?;
+
+    let events = run_semcode_collecting_hello_observations_with_config(bytes, execution_config)
+        .map_err(|e| e.to_string())?;
     let mut capability_manifest = CapabilityManifest::new();
     capability_manifest.allow(CapabilityKind::ControlledObservationSink);
 
@@ -2809,14 +2820,11 @@ fn collect_controlled_observation_envelope(
         ));
     };
 
-    // `run_semcode_collecting_hello_observations` internally executes under
-    // `ExecutionConfig::for_context(ExecutionContext::VerifiedLocal)` (see
-    // its own definition) but does not surface that config to this caller.
-    // Constructing the same canonical config here - rather than hardcoding
-    // the context and a separately-derived `RuntimeQuotas` value - records
-    // the effective envelope that actually governs that call, not a
-    // reconstruction of it (#1762).
-    let execution_config = ExecutionConfig::for_context(ExecutionContext::VerifiedLocal);
+    // Reuses the SAME `execution_config` already passed to
+    // `verify_semcode_token_with_quotas` and
+    // `run_semcode_collecting_hello_observations_with_config` above - the
+    // recorded provenance is the actual authority, not a value
+    // reconstructed after the fact (#1762).
     let mut audit_trail = AuditTrail::new(AuditSessionMetadata {
         context: execution_config.context,
         quotas: execution_config.quotas,
