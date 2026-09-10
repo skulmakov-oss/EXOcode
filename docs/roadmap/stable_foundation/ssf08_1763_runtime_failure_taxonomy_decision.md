@@ -139,12 +139,20 @@ values at runtime.** The two facts (compiler-forced exhaustive match vs.
 actual runtime reachability) are independent, and the table above answers
 the second question empirically, not by inference from the first.
 
-Both `run_verified_entry_semcode_with_config` (canonical verified path)
-and `run_semcode_with_entry_and_config` (raw/bypass path) terminate in the
+`run_verified_entry_semcode_with_config` (canonical verified path) and
+`run_semcode_with_entry_and_config` (raw/bypass path) terminate in the
 same private function, `run_vm_program_view_with_entry_and_config_with_observation_runtime`
 (`semcode_vm.rs:1057`), which calls `push_frame` then `exec_loop` - all
-four live variants are reached from there or a direct callee, so they are
-reachable from **both** execution paths, not merely the raw one.
+four live variants' handlers live in that shared code, called by both
+paths. This establishes only that **the handler is not raw-path-exclusive
+code** - it does not by itself prove a fully verified program can still
+reach `AssertionFailed`/`BorrowWriteConflict`/`DivisionByZero`/
+`ArithmeticOverflow` at runtime (that would require separately proving no
+static verifier check forecloses it, which this checkpoint did not
+attempt). This decision's classification of these four as `RuntimeTrap`
+rests on failure semantics (§11), not on proving verified-path
+reachability - the same standard §16 applies to the structural
+`RuntimeError` variants.
 
 ## 5. `RuntimeError` production reachability matrix
 
@@ -183,10 +191,16 @@ as naming accidents:
   during dispatch): `InvalidJumpAddress`, `TypeMismatchRuntime`,
   `StackUnderflow`, `UnknownFunction`, `UnknownVariable`,
   `InvalidStringId`, `BadFormat` (live-dispatch half).
-- **C. Resource exhaustion**: `RuntimeError::QuotaExceeded(QuotaExceeded)`,
-  settled architecture per `#1759`/`#1900`/`#1761`/`#1760` (§13).
-- **D. Semantic program trap** (an otherwise-admitted program's own
-  runtime semantics deliberately trap): `AssertionFailed`,
+- **C. Resource exhaustion**: `RuntimeError::QuotaExceeded(QuotaExceeded)`
+  for `Steps`/`Calls`/`Frames`/`Registers`/`EffectCalls`, settled
+  architecture per `#1759`/`#1900`/`#1761`/`#1760` - **except
+  `StackDepth`**, whose exhaustion is deliberately remapped to
+  `RuntimeError::StackOverflow` by a live, test-backed compatibility
+  mapping (§13, §17); `SymbolTable` is enforced statically by `sm-verify`
+  at admission, outside this runtime channel entirely.
+- **D. Semantic program trap** (a failure produced by the semantics of an
+  executing instruction/operation, independent of whether that particular
+  execution was admitted through `sm-verify` first): `AssertionFailed`,
   `BorrowWriteConflict`, `DivisionByZero`, `ArithmeticOverflow` - the
   4 live `RuntimeTrap` variants, and only these four.
 - **E. Capability-policy rejection**: `RuntimeError::CapabilityDenied
@@ -378,21 +392,35 @@ indefinitely with no justification. **Falsified.**
 
 ## 11. Selected definition of "trap"
 
-> **`RuntimeTrap` means: a failure caused by executing an otherwise-
-> admitted Semantic program, where the instruction/program semantics
-> themselves deliberately trap.** It is not administrative (quota,
-> capability, ABI), not structural/defensive VM validation, and not
-> pre-execution admission rejection. Its members are exactly:
-> `AssertionFailed`, `BorrowWriteConflict`, `DivisionByZero`,
-> `ArithmeticOverflow`.
+> **`RuntimeTrap` means: an execution-semantic failure produced by the
+> semantics of an executing Semantic instruction/program operation** -
+> `assert`, arithmetic, or ownership-path evaluation reaching a defined
+> failure boundary during dispatch - **as distinct from structural VM
+> validation, resource administration, capability policy, ABI/host
+> boundaries, or verifier admission.** Classification is by failure
+> semantics, not by which entrypoint the caller used: the four live
+> variants are reached from `exec_loop_with_profile` and its direct
+> callees, which both the canonical verified path and the raw/unverified
+> path route through (§4) - membership in `RuntimeTrap` does not require
+> or imply that the particular execution was admitted through `sm-verify`
+> first. Its members are exactly: `AssertionFailed`, `BorrowWriteConflict`,
+> `DivisionByZero`, `ArithmeticOverflow`.
 >
-> **`RuntimeError` means: the complete, top-level, caller-visible failure
-> channel for every stage of the runtime's lifecycle** - decode/format
-> rejection, entry resolution, structural/defensive validation, resource
-> exhaustion, verifier rejection (via the compatibility shims that admit
-> bytes directly), capability denial, host/ABI failure, and semantic
-> program traps (wrapped via `Trap(RuntimeTrap)`). It is the sole type a
-> real caller ever receives from any `pub fn run_*`/`verify_*` entrypoint.
+> **`RuntimeError` means: the top-level, caller-visible failure authority
+> of `sm-vm`'s execution APIs and its byte-accepting compatibility
+> shims** - decode/format rejection, entry resolution, structural/
+> defensive validation, resource exhaustion, capability denial, host/ABI
+> failure, and semantic program traps (wrapped via `Trap(RuntimeTrap)`).
+> **It is not the failure authority of `sm-verify`'s own direct public
+> API.** `sm_verify::verify_semcode_token(...)` and
+> `sm_verify::verify_semcode(...)` return `Result<_, RejectReport>`
+> directly - a caller using those functions never sees a `RuntimeError`
+> at all. `RuntimeError::VerifierRejected(RejectReport)` exists
+> specifically for the `sm-vm` compatibility shims that accept raw bytes
+> and perform verification internally (§5, §14) - it *adapts*
+> `RejectReport` into the VM's own failure channel; it does not make
+> `RuntimeError` a universal replacement for `RejectReport` as the
+> verifier's own authority.
 
 ## 12. Per-`RuntimeTrap`-variant disposition
 
@@ -438,10 +466,23 @@ directly in `sm-verify/src/lib.rs:1358-1369`: checked as a plain
 `QuotaKind`/`RuntimeTrap` involvement.
 
 `RuntimeError::QuotaExceeded(QuotaExceeded)` is confirmed the active
-quota-exhaustion channel (§5), fanning out from 3 lexical choke points
-(`enforce_quota`, `charge_counter`) to 6 of 7 `QuotaKind`s (`SymbolTable`
-is enforced statically by `sm-verify`, outside `sm-vm`'s charge path
-entirely, per the settled `#1761` ownership split - not a gap).
+quota-exhaustion channel for `Steps`, `Calls`, `Frames`, `Registers`, and
+`EffectCalls` - 5 of 7 `QuotaKind`s. It is **not** the sole caller-visible
+outcome for every `QuotaKind`: internally, `enforce_quota`/
+`charge_counter` (3 lexical choke points) are invoked for 6 of the 7
+kinds, including `StackDepth` - but `push_frame` intercepts a
+`StackDepth`-triggered `QuotaExceeded` result and remaps it to
+`RuntimeError::StackOverflow` before it ever reaches a caller (`semcode_vm.rs:3094-3097`:
+`Err(RuntimeError::QuotaExceeded(_)) => return Err(RuntimeError::StackOverflow)`),
+discarding the `QuotaExceeded{kind,limit,used}` struct in the process.
+This is a live, existing, test-backed compatibility mapping, not new
+behavior introduced by this decision - it is recorded here so the final
+taxonomy (§17) states the real caller-visible channel per `QuotaKind`
+rather than a single blanket claim. `SymbolTable`, the 7th `QuotaKind`,
+is enforced statically by `sm-verify` at admission, entirely outside
+`sm-vm`'s runtime charge path - a `RejectReport` rejection, not a
+`RuntimeError::QuotaExceeded` occurrence at all, per the settled `#1761`
+ownership split.
 
 `RuntimeTrap::QuotaExceeded(QuotaExceeded)` is **not retained merely
 because it once existed** - it has zero construction sites, and this
@@ -452,11 +493,20 @@ authority (frozen or active) requires that change. Disposition:
 ## 14. Verifier-rejection boundary (preserved)
 
 `RuntimeError::VerifierRejected(RejectReport)` is confirmed the
-authoritative caller-visible channel for verifier rejection (§5, 9
-production sites, all `.map_err(RuntimeError::VerifierRejected)?`
-immediately after `verify_semcode_token(_with_quotas)`), occurring before
-trusted execution begins - stage A in §6, structurally distinct from
-stage D (semantic program trap). This model does **not** collapse
+caller-visible channel for verifier rejection **specifically inside
+`sm-vm`'s byte-accepting compatibility shims** (§5, 9 production sites,
+all `.map_err(RuntimeError::VerifierRejected)?` immediately after
+`verify_semcode_token(_with_quotas)`), occurring before trusted execution
+begins - stage A in §6, structurally distinct from stage D (semantic
+program trap). It is **not** the authority for `sm-verify`'s own direct
+public API: `sm_verify::verify_semcode_token(...)` and
+`sm_verify::verify_semcode(...)` return `Result<_, RejectReport>`
+directly, and a caller using those functions never constructs or sees a
+`RuntimeError` at all (§17). `RuntimeError::VerifierRejected` exists to
+*adapt* `RejectReport` into `sm-vm`'s own failure channel for the specific
+entrypoints that accept raw bytes and perform verification internally -
+it is not a claim that `RuntimeError` subsumes or replaces `RejectReport`
+as the verifier's own authority. This model does **not** collapse
 verifier rejection into a payload-free `RuntimeTrap::VerifierRejected` -
 that variant is dead and stays dead; the real, full `RejectReport`
 authority is untouched and unaffected by this decision.
@@ -479,15 +529,37 @@ per §12.
 `InvalidJumpAddress`, and the live-dispatch half of `BadFormat` are
 defense-in-depth runtime validation, not semantic program traps - they
 fire on internal VM-invariant violations (stack discipline, type
-coercion, jump-target bounds, opcode decode), not on a legally-admitted
-program's own deliberate semantics. All are reachable from **both** the
-canonical verified path and the raw/bypass path (they live inside
-`exec_loop_with_profile` or its direct callees, shared by both paths per
-§4's call-graph confirmation) - none is removed merely because
-verifier-first execution makes it rare in the canonical path; the
-raw/bypass path intentionally exercises this defense-in-depth layer, and
-these `RuntimeError` variants remain exactly as-is, untouched by this
-decision.
+coercion, jump-target bounds, opcode decode), not on an executing
+program's own deliberate semantics.
+
+A shared handler location is not, by itself, proof of verified-path
+reachability - that conflation is exactly the failure mode this
+checkpoint exists to avoid repeating in the other direction. For each,
+distinguishing what is actually proven:
+
+- **Production constructor exists**: yes, for all five (§5).
+- **Handler lives in code shared by both paths** (`exec_loop_with_profile`
+  or a direct callee, per §4's call-graph confirmation): yes, for all
+  five - this is a fact about code location, not about reachability.
+- **Raw/unverified-path reachability**: proven for all five - the raw
+  path skips `sm-verify` admission entirely, so every one of these
+  defense-in-depth checks is live and necessary there.
+- **Verified-path reachability**: **not proven, and in at least one case
+  actively prevented.** `sm-verify` has its own static, pre-execution
+  check for jump targets (`VerificationCode::InvalidJumpTarget`,
+  structurally distinct from and unrelated to `RuntimeError::
+  InvalidJumpAddress`) - a fully verified program's jump targets are
+  admission-checked before execution, so `RuntimeError::InvalidJumpAddress`
+  firing at runtime under the canonical verified path is not established
+  by this document and may in fact be precluded by that separate static
+  check. This checkpoint does not need to resolve that question either
+  way: **#1763 does not require every defense-in-depth `RuntimeError` to
+  be reachable after successful verification** - none of the five is
+  removed merely because verifier-first execution might make it rare or
+  unreachable on the canonical path, and none is removed merely because a
+  handler location is shared. All five `RuntimeError` variants remain
+  exactly as-is, legitimately serving the raw/unverified/compatibility
+  paths at minimum, untouched by this decision either way.
 
 ## 17. Final target failure taxonomy
 
@@ -497,21 +569,28 @@ decision.
 | Borrow/write conflict | execution, semantic trap | `sm_runtime_core::RuntimeTrap` | `RuntimeError::Trap(RuntimeTrap::BorrowWriteConflict)` | none | **YES** |
 | Division by zero | execution, semantic trap | `sm_runtime_core::RuntimeTrap` | `RuntimeError::Trap(RuntimeTrap::DivisionByZero)` | none | **YES** |
 | Arithmetic overflow | execution, semantic trap | `sm_runtime_core::RuntimeTrap` | `RuntimeError::Trap(RuntimeTrap::ArithmeticOverflow)` | none | **YES** |
-| Stack overflow | frame-push admission | `sm_vm::RuntimeError` | `RuntimeError::StackOverflow` | none | no |
+| Stack overflow (structural) **and** `QuotaKind::StackDepth` exhaustion | frame-push admission | `sm_vm::RuntimeError` | `RuntimeError::StackOverflow` - `StackDepth` exhaustion is deliberately remapped here from `QuotaExceeded` by a live, test-backed compatibility mapping (`push_frame`, §13) | none (the remap discards the `QuotaExceeded{kind,limit,used}` struct it converts from) | no |
 | Stack underflow | execution (`Ret`) | `sm_vm::RuntimeError` | `RuntimeError::StackUnderflow` | none | no |
 | Runtime type mismatch | execution/coercion/call-boundary | `sm_vm::RuntimeError` | `RuntimeError::TypeMismatchRuntime(String)` | message | no |
 | Invalid opcode | decode/live dispatch | `sm_vm::RuntimeError` | `RuntimeError::BadFormat(String)` | message | no |
-| Invalid jump | execution dispatch | `sm_vm::RuntimeError` | `RuntimeError::InvalidJumpAddress{func,addr}` | func,addr | no |
+| Invalid jump | execution dispatch (raw path; verified path has its own separate static admission check, §16) | `sm_vm::RuntimeError` | `RuntimeError::InvalidJumpAddress{func,addr}` | func,addr | no |
 | Bad header/format | pre-execution decode (raw path) | `sm_vm::RuntimeError` | `RuntimeError::BadHeader`/`BadFormat` | none/message | no |
 | Unsupported bytecode version | pre-execution decode (raw path) | `sm_vm::RuntimeError` | `RuntimeError::UnsupportedBytecodeVersion{found,supported}` | found,supported | no |
 | Unknown function | entry resolution/call dispatch | `sm_vm::RuntimeError` | `RuntimeError::UnknownFunction(String)` | name | no |
-| Quota exhaustion | frame/register/steps/calls/effects | `sm_runtime_core::RuntimeQuotas` | `RuntimeError::QuotaExceeded(QuotaExceeded)` | kind,limit,used | no |
-| Verifier rejection | pre-execution admission | `sm_verify::RejectReport` | `RuntimeError::VerifierRejected(RejectReport)` | full diagnostics | no |
+| Quota exhaustion - `Steps`/`Calls`/`Frames`/`Registers`/`EffectCalls` | frame/register/steps/calls/effects | `sm_runtime_core::QuotaExceeded`/`QuotaKind` (the failure payload type - `RuntimeQuotas` is the *configured envelope*, not the failure payload) | `RuntimeError::QuotaExceeded(QuotaExceeded)` | kind,limit,used | no |
+| Quota exhaustion - `SymbolTable` | static, pre-execution admission | `sm_verify` | verifier `RejectReport` rejection, not an `sm-vm` runtime channel at all | full diagnostics | no |
+| Verifier rejection - direct `sm-verify` public API (`verify_semcode_token`, `verify_semcode`) | pre-execution admission | `sm_verify::RejectReport` | `RejectReport` returned **directly** - no `RuntimeError` is ever constructed or seen by this caller | full diagnostics | no |
+| Verifier rejection - `sm-vm`'s byte-accepting compatibility shims (which perform verification internally before executing) | pre-execution admission, then adapted into the VM's own channel | `sm_verify::RejectReport`, adapted by `sm_vm::RuntimeError` | `RuntimeError::VerifierRejected(RejectReport)` | full diagnostics | no |
 | Capability denial | host boundary, pre-check | `prom_cap::CapabilityDenied` | `RuntimeError::CapabilityDenied(CapabilityDenied)` | full struct | no |
 | Host/ABI failure | host boundary, post-check | `prom_abi::AbiError` | `RuntimeError::HostAbi(AbiError)` | call,kind,message | no |
 
 No overlapping authority remains unexplained - every row has exactly one
-owning type and one caller-visible channel.
+owning type and one caller-visible channel. Quota exhaustion and verifier
+rejection are each deliberately split into two rows because each has two
+genuinely distinct caller-visible outcomes today (a compatibility remap
+for `StackDepth`; a direct-API-vs-VM-adapted split for verifier
+rejection) - collapsing either pair into one row would misstate the
+actual channel a given caller receives.
 
 ## 18. Public API consequence
 
@@ -608,13 +687,31 @@ an open choice.
 
 **Not satisfied now** - this is a decision, not an implementation.
 Becomes **satisfiable** once a future, separately-authorized
-implementation checkpoint executes §21's frozen mechanic: verification
-rejection, runtime quota exhaustion, semantic trap, capability denial,
-host/ABI failure, and structural runtime errors already each have an
-explicit, deterministic, correctly-staged channel matching production
-behavior (§17) - the only remaining work is deleting `RuntimeTrap`'s dead
-vocabulary so the *type* stops overstating what the *behavior* already
-correctly does.
+implementation checkpoint executes §21's frozen mechanic. The target
+state is explicitly the real split established in §13-§17, not one
+universal failure enum:
+
+- direct verifier API rejection (`verify_semcode_token`, `verify_semcode`)
+  → `RejectReport`, returned directly, no `RuntimeError` involved
+- verifier rejection adapted by `sm-vm`'s byte-accepting compatibility
+  shims → `RuntimeError::VerifierRejected(RejectReport)`
+- ordinary runtime quota exhaustion (`Steps`/`Calls`/`Frames`/`Registers`/
+  `EffectCalls`) → `RuntimeError::QuotaExceeded(QuotaExceeded)`
+- `StackDepth` quota exhaustion → `RuntimeError::StackOverflow`, via the
+  existing compatibility remap
+- `SymbolTable` quota → static `sm-verify` admission rejection, not an
+  `sm-vm` runtime channel
+- semantic trap → `RuntimeError::Trap(RuntimeTrap)`, narrowed to the 4
+  live variants
+- capability denial → `RuntimeError::CapabilityDenied(CapabilityDenied)`
+- host/ABI failure → `RuntimeError::HostAbi(AbiError)`
+- structural/defensive runtime validation → the corresponding
+  `RuntimeError` variant (§16)
+
+Every one of these already has an explicit, deterministic,
+correctly-staged channel matching production behavior today (§17) - the
+only remaining work is deleting `RuntimeTrap`'s dead vocabulary so the
+*type* stops overstating what the *behavior* already correctly does.
 
 ## 23. AC4.e consequence
 
