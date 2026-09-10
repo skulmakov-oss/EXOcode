@@ -129,7 +129,7 @@ generic `"runtime trap: {:?}"` for the other two live ones.
 | `CapabilityDenied` | **0** | 0 | No | real channel is `RuntimeError::CapabilityDenied(CapabilityDenied)` (8 sites) - **name collision**, and the dead trap variant is payload-free so it could never have carried the real struct |
 | `AbiViolation` | **0** | 0 | No | real channel is `RuntimeError::HostAbi(AbiError)` (18 sites) |
 | `VerifierRejected` | **0** | 0 | No | real channel is `RuntimeError::VerifierRejected(RejectReport)` (9 sites) - **name collision**, payload-free dead variant could never have carried the real `RejectReport` |
-| `QuotaExceeded(QuotaExceeded)` | **0** | 0 | No | real channel is `RuntimeError::QuotaExceeded(QuotaExceeded)` (3 lexical choke points, fans to 6 of 7 `QuotaKind`s) - **name AND payload-type collision** |
+| `QuotaExceeded(QuotaExceeded)` | **0** | 0 | No | real authority for most `QuotaKind`s is `RuntimeError::QuotaExceeded(QuotaExceeded)` (3 lexical choke points) - but not all: `StackDepth` is remapped to `RuntimeError::StackOverflow` before reaching a caller, and `SymbolTable` is a static `sm-verify` admission rejection, not an `sm-vm` runtime channel at all (§13) - **name AND payload-type collision** regardless |
 
 `src/bin/smc.rs::vm_trap_message_needle` is an exhaustive `match` over all
 13 variants - required by the Rust compiler because the enum has no
@@ -185,8 +185,14 @@ evaluate genuinely exist as distinct classes in current code, not merely
 as naming accidents:
 
 - **A. Verification/admission rejection** (before trusted execution
-  begins): `RuntimeError::VerifierRejected(RejectReport)`, carrying
-  `sm-verify`'s own `RejectReport{diagnostics: Vec<VerificationDiagnostic>}`.
+  begins), carrying `sm-verify`'s own `RejectReport{diagnostics:
+  Vec<VerificationDiagnostic>}` throughout - split by caller: direct
+  `sm-verify` public admission APIs (`verify_semcode_token`,
+  `verify_semcode`) return `RejectReport` **directly**, with no
+  `RuntimeError` involved at all; `sm-vm`'s byte-accepting compatibility
+  shims, which perform verification internally before executing, adapt
+  the same `RejectReport` into `RuntimeError::VerifierRejected(RejectReport)`
+  (§14).
 - **B. Execution structural/runtime error** (defense-in-depth validation
   during dispatch): `InvalidJumpAddress`, `TypeMismatchRuntime`,
   `StackUnderflow`, `UnknownFunction`, `UnknownVariable`,
@@ -232,7 +238,7 @@ variants actually populate.
 | Type mismatch runtime | `RuntimeError::TypeMismatchRuntime` | RuntimeError, accurate |
 | Stack underflow | `RuntimeError::StackUnderflow` | RuntimeError, accurate |
 | Stack overflow | `RuntimeTrap::StackOverflow` | **RuntimeTrap, INACCURATE** - zero construction sites (§4); real evidence is `RuntimeError::StackOverflow` |
-| Quota exceeded | bare `QuotaExceeded`/`RuntimeQuotas` (unprefixed) | ambiguous, resolves in practice to `RuntimeError::QuotaExceeded` |
+| Quota exceeded | bare `QuotaExceeded`/`RuntimeQuotas` (unprefixed) | ambiguous bare quota vocabulary; current authority is split - `Steps`/`Calls`/`Frames`/`Registers`/`EffectCalls` → `RuntimeError::QuotaExceeded(QuotaExceeded)`; `StackDepth` → `RuntimeError::StackOverflow` via the existing compatibility remap; `SymbolTable` → static `sm-verify` admission rejection (§13) |
 | Division by zero | no code citation (test-only) | ambiguous |
 | Arithmetic overflow | `RuntimeTrap::ArithmeticOverflow` | RuntimeTrap, **accurate** (genuinely constructed) |
 | Assertion failure | no code citation (test-only) | ambiguous |
@@ -437,8 +443,8 @@ indefinitely with no justification. **Falsified.**
 | `InvalidJump` | **REMOVE_DUPLICATE** | zero construction; real authority `RuntimeError::InvalidJumpAddress` |
 | `CapabilityDenied` | **REMOVE_DUPLICATE** | zero construction; real authority `RuntimeError::CapabilityDenied` |
 | `AbiViolation` | **REMOVE_DUPLICATE** | zero construction; real authority `RuntimeError::HostAbi` |
-| `VerifierRejected` | **REMOVE_DUPLICATE** | zero construction; real authority `RuntimeError::VerifierRejected` |
-| `QuotaExceeded(QuotaExceeded)` | **REMOVE_DUPLICATE** | zero construction; real authority `RuntimeError::QuotaExceeded` |
+| `VerifierRejected` | **REMOVE_DUPLICATE** | zero construction; real authority is `RejectReport` directly (`sm-verify`'s own API) or `RuntimeError::VerifierRejected` (adapted by `sm-vm`'s compatibility shims) - §6, §14 |
+| `QuotaExceeded(QuotaExceeded)` | **REMOVE_DUPLICATE** | zero construction; real authority is split by `QuotaKind` - mostly `RuntimeError::QuotaExceeded`, but `StackDepth` → `RuntimeError::StackOverflow`, `SymbolTable` → static `sm-verify` rejection - §13 |
 
 No variant is dispositioned `RENAME`, `MOVE`,
 `DEPRECATE_WITH_LIVE_COMPATIBILITY`, or `RESERVED_WITH_JUSTIFIED_AUTHORITY`
