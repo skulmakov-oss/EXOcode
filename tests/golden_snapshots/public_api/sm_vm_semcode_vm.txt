@@ -94,6 +94,7 @@ Trap(RuntimeTrap),
 pub fn run_semcode(bytes: &[u8]) -> Result<(), RuntimeError> {
 pub fn run_verified_semcode(bytes: &[u8]) -> Result<(), RuntimeError> {
 pub fn run_semcode_collecting_hello_observations( bytes: &[u8], ) -> Result<Vec<HelloObservationEvent>, RuntimeError> {
+pub fn run_semcode_collecting_hello_observations_with_config( bytes: &[u8], config: ExecutionConfig, ) -> Result<Vec<HelloObservationEvent>, RuntimeError> {
 pub fn run_semcode_with_entry(bytes: &[u8], entry: &str) -> Result<(), RuntimeError> {
 pub fn run_semcode_with_config(bytes: &[u8], config: ExecutionConfig) -> Result<(), RuntimeError> {
 pub fn run_verified_semcode_with_config( bytes: &[u8], config: ExecutionConfig, ) -> Result<(), RuntimeError> {
